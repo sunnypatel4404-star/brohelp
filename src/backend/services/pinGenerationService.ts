@@ -82,7 +82,7 @@ export class PinGenerationService {
    */
   private extractBenefit(title: string): string {
     // Clean emoji and extra characters
-    let clean = title.replace(/[^\w\s-]/g, '').trim();
+    const clean = title.replace(/[^\w\s-]/g, '').trim();
 
     // Look for common benefit patterns
     const patterns = [
