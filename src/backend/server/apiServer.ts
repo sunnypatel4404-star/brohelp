@@ -195,6 +195,7 @@ const pinStorage = new PinStorageService()
 const dashboard = new DashboardService()
 
 // Error handling middleware
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
   console.error('API Error:', err)
   res.status(500).json({ error: err.message || 'Unknown error' })
@@ -702,7 +703,7 @@ function generatePinCSV(pins: Array<{
   }
 
   // Helper to ensure link is a string
-  const getLink = (link: any): string => {
+  const getLink = (link: unknown): string => {
     if (typeof link === 'string') {
       // If it's already a string with [object Object], extract the ID if possible
       if (link.includes('[object Object]')) {
@@ -710,7 +711,10 @@ function generatePinCSV(pins: Array<{
       }
       return link
     }
-    if (typeof link === 'object' && link?.id) return `https://parentvillage.blog/?p=${link.id}`
+    if (typeof link === 'object' && link !== null && 'id' in link) {
+      const id = (link as { id: number }).id
+      return `https://parentvillage.blog/?p=${id}`
+    }
     return 'https://parentvillage.blog/'
   }
 
