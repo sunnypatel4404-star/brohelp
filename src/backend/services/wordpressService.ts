@@ -9,6 +9,19 @@ interface WordPressPost {
   status?: 'publish' | 'draft';
 }
 
+interface WordPressPostResponse {
+  id: number;
+  title: { rendered: string };
+  content: { rendered: string };
+  excerpt: { rendered: string };
+  status: string;
+  link: string;
+  date: string;
+  modified: string;
+  categories: number[];
+  tags: number[];
+}
+
 export class WordPressService {
   private client: AxiosInstance;
   private baseURL: string;
@@ -27,7 +40,7 @@ export class WordPressService {
     });
   }
 
-  async createPost(post: WordPressPost): Promise<any> {
+  async createPost(post: WordPressPost): Promise<WordPressPostResponse> {
     try {
       const response = await this.client.post('/posts', {
         title: post.title,
@@ -46,7 +59,7 @@ export class WordPressService {
     }
   }
 
-  async updatePost(postId: number, post: Partial<WordPressPost>): Promise<any> {
+  async updatePost(postId: number, post: Partial<WordPressPost>): Promise<WordPressPostResponse> {
     try {
       const response = await this.client.post(`/posts/${postId}`, post);
       console.log(`✓ Post ${postId} updated successfully`);
@@ -57,7 +70,7 @@ export class WordPressService {
     }
   }
 
-  async getPost(postId: number): Promise<any> {
+  async getPost(postId: number): Promise<WordPressPostResponse> {
     try {
       const response = await this.client.get(`/posts/${postId}`);
       return response.data;
@@ -67,7 +80,7 @@ export class WordPressService {
     }
   }
 
-  async listPosts(pageNumber: number = 1, perPage: number = 10): Promise<any[]> {
+  async listPosts(pageNumber: number = 1, perPage: number = 10): Promise<WordPressPostResponse[]> {
     try {
       const response = await this.client.get('/posts', {
         params: {
