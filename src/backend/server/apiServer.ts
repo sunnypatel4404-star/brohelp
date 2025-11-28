@@ -11,12 +11,162 @@ import { BotConfig } from '../config/botConfig'
 
 dotenv.config()
 
+// ============ JOB TRACKING SYSTEM ============
+
+interface JobStatus {
+  id: string
+  status: 'queued' | 'processing' | 'completed' | 'failed'
+  topic: string
+  createdAt: string
+  updatedAt: string
+  result?: {
+    articleTitle?: string
+    postId?: number
+    imagePath?: string
+    pinsGenerated?: number
+  }
+  error?: string
+  steps: {
+    article: 'pending' | 'processing' | 'completed' | 'failed'
+    image: 'pending' | 'processing' | 'completed' | 'failed' | 'skipped'
+    wordpress: 'pending' | 'processing' | 'completed' | 'failed' | 'skipped'
+    pins: 'pending' | 'processing' | 'completed' | 'failed' | 'skipped'
+  }
+}
+
+// In-memory job store (in production, use Redis or a database)
+const jobs = new Map<string, JobStatus>()
+
+function createJob(topic: string): JobStatus {
+  const job: JobStatus = {
+    id: `job_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+    status: 'queued',
+    topic,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    steps: {
+      article: 'pending',
+      image: 'pending',
+      wordpress: 'pending',
+      pins: 'pending'
+    }
+  }
+  jobs.set(job.id, job)
+  return job
+}
+
+function updateJob(jobId: string, updates: Partial<JobStatus>): void {
+  const job = jobs.get(jobId)
+  if (job) {
+    Object.assign(job, updates, { updatedAt: new Date().toISOString() })
+  }
+}
+
+// Clean up old jobs (keep last 100)
+function cleanupOldJobs(): void {
+  if (jobs.size > 100) {
+    const sortedJobs = Array.from(jobs.entries())
+      .sort((a, b) => new Date(b[1].createdAt).getTime() - new Date(a[1].createdAt).getTime())
+
+    sortedJobs.slice(100).forEach(([id]) => jobs.delete(id))
+  }
+}
+
 const app = express()
 const PORT = process.env.API_PORT || 5000
+
+// ============ RATE LIMITING ============
+
+interface RateLimitEntry {
+  count: number
+  resetTime: number
+}
+
+const rateLimitStore = new Map<string, RateLimitEntry>()
+
+// Rate limit configuration
+const RATE_LIMIT_WINDOW_MS = 60 * 1000  // 1 minute window
+const RATE_LIMIT_MAX_REQUESTS = 10       // Max requests per window for general endpoints
+const RATE_LIMIT_MAX_GENERATE = 3        // Max article generations per window (expensive operations)
+
+function getRateLimitKey(req: Request): string {
+  // Use IP address as the rate limit key
+  const forwarded = req.headers['x-forwarded-for']
+  const ip = typeof forwarded === 'string' ? forwarded.split(',')[0].trim() : req.ip || req.socket.remoteAddress || 'unknown'
+  return ip
+}
+
+function checkRateLimit(key: string, maxRequests: number): { allowed: boolean; remaining: number; resetIn: number } {
+  const now = Date.now()
+  const entry = rateLimitStore.get(key)
+
+  // Clean up old entries periodically
+  if (rateLimitStore.size > 10000) {
+    for (const [k, v] of rateLimitStore) {
+      if (v.resetTime < now) rateLimitStore.delete(k)
+    }
+  }
+
+  if (!entry || entry.resetTime < now) {
+    // New window
+    rateLimitStore.set(key, { count: 1, resetTime: now + RATE_LIMIT_WINDOW_MS })
+    return { allowed: true, remaining: maxRequests - 1, resetIn: RATE_LIMIT_WINDOW_MS }
+  }
+
+  if (entry.count >= maxRequests) {
+    return { allowed: false, remaining: 0, resetIn: entry.resetTime - now }
+  }
+
+  entry.count++
+  return { allowed: true, remaining: maxRequests - entry.count, resetIn: entry.resetTime - now }
+}
+
+// Rate limiting middleware for general endpoints
+function rateLimitMiddleware(req: Request, res: Response, next: NextFunction): void {
+  const key = getRateLimitKey(req)
+  const result = checkRateLimit(key, RATE_LIMIT_MAX_REQUESTS)
+
+  res.setHeader('X-RateLimit-Limit', RATE_LIMIT_MAX_REQUESTS.toString())
+  res.setHeader('X-RateLimit-Remaining', result.remaining.toString())
+  res.setHeader('X-RateLimit-Reset', Math.ceil(result.resetIn / 1000).toString())
+
+  if (!result.allowed) {
+    res.status(429).json({
+      error: 'Too many requests',
+      message: `Rate limit exceeded. Try again in ${Math.ceil(result.resetIn / 1000)} seconds.`,
+      retryAfter: Math.ceil(result.resetIn / 1000)
+    })
+    return
+  }
+
+  next()
+}
+
+// Stricter rate limiting for expensive operations (article generation)
+function generateRateLimitMiddleware(req: Request, res: Response, next: NextFunction): void {
+  const key = `generate:${getRateLimitKey(req)}`
+  const result = checkRateLimit(key, RATE_LIMIT_MAX_GENERATE)
+
+  res.setHeader('X-RateLimit-Limit', RATE_LIMIT_MAX_GENERATE.toString())
+  res.setHeader('X-RateLimit-Remaining', result.remaining.toString())
+  res.setHeader('X-RateLimit-Reset', Math.ceil(result.resetIn / 1000).toString())
+
+  if (!result.allowed) {
+    res.status(429).json({
+      error: 'Too many generation requests',
+      message: `Article generation is rate limited to ${RATE_LIMIT_MAX_GENERATE} requests per minute. Try again in ${Math.ceil(result.resetIn / 1000)} seconds.`,
+      retryAfter: Math.ceil(result.resetIn / 1000)
+    })
+    return
+  }
+
+  next()
+}
 
 // Middleware
 app.use(cors())
 app.use(express.json())
+app.use(rateLimitMiddleware)  // Apply general rate limiting to all routes
 
 // Load config
 const botConfig: BotConfig = {
@@ -59,82 +209,247 @@ interface GenerateArticleRequest {
   generatePins?: boolean
 }
 
-app.post('/api/articles/generate', async (req: Request, res: Response) => {
-  try {
-    const { topic, generateImage = true, uploadToWordPress = true, generatePins = true } = req.body as GenerateArticleRequest
+// Validate and sanitize topic input for API
+function validateTopicInput(topic: unknown): { valid: boolean; error?: string; sanitized?: string } {
+  if (!topic || typeof topic !== 'string') {
+    return { valid: false, error: 'Topic is required and must be a string' }
+  }
 
-    if (!topic) {
-      res.status(400).json({ error: 'Topic is required' })
+  const trimmed = topic.trim()
+
+  if (trimmed.length < 5) {
+    return { valid: false, error: 'Topic must be at least 5 characters long' }
+  }
+
+  if (trimmed.length > 500) {
+    return { valid: false, error: 'Topic must be less than 500 characters' }
+  }
+
+  // Check for potentially malicious content
+  const suspiciousPatterns = [/<script/i, /javascript:/i, /data:/i, /on\w+=/i]
+  for (const pattern of suspiciousPatterns) {
+    if (pattern.test(trimmed)) {
+      return { valid: false, error: 'Topic contains invalid characters' }
+    }
+  }
+
+  // Sanitize: remove HTML tags and excessive whitespace
+  const sanitized = trimmed.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim()
+
+  return { valid: true, sanitized }
+}
+
+app.post('/api/articles/generate', generateRateLimitMiddleware, async (req: Request, res: Response) => {
+  try {
+    const { topic: rawTopic, generateImage = true, uploadToWordPress = true, generatePins = true } = req.body as GenerateArticleRequest
+
+    // Validate topic input
+    const validation = validateTopicInput(rawTopic)
+    if (!validation.valid) {
+      res.status(400).json({ error: validation.error })
       return
     }
 
-    res.status(200).json({ message: 'Article generation started', status: 'processing' })
+    const topic = validation.sanitized!
 
-    // Run in background
-    generateArticleBackground(topic, generateImage, uploadToWordPress, generatePins).catch(err =>
-      console.error('Background article generation error:', err)
-    )
+    // Create a trackable job
+    const job = createJob(topic)
+    cleanupOldJobs()
+
+    res.status(200).json({
+      message: 'Article generation started',
+      status: 'processing',
+      jobId: job.id
+    })
+
+    // Run in background with job tracking
+    generateArticleBackground(job.id, topic, generateImage, uploadToWordPress, generatePins)
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to start article generation' })
   }
 })
 
-async function generateArticleBackground(topic: string, generateImage: boolean, uploadToWordPress: boolean, generatePins: boolean) {
+// Get job status endpoint
+app.get('/api/jobs/:id', (req: Request, res: Response) => {
+  const job = jobs.get(req.params.id)
+
+  if (!job) {
+    res.status(404).json({ error: 'Job not found' })
+    return
+  }
+
+  res.json(job)
+})
+
+// List all jobs
+app.get('/api/jobs', (_req: Request, res: Response) => {
+  const allJobs = Array.from(jobs.values())
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+    .slice(0, 50)
+
+  res.json({ jobs: allJobs, count: allJobs.length })
+})
+
+async function generateArticleBackground(
+  jobId: string,
+  topic: string,
+  generateImage: boolean,
+  uploadToWordPress: boolean,
+  generatePins: boolean
+): Promise<void> {
+  const result: JobStatus['result'] = {}
+
   try {
+    updateJob(jobId, { status: 'processing' })
+
     // Step 1: Generate article content
-    console.log(`Generating article for topic: ${topic}`)
+    updateJob(jobId, { steps: { ...jobs.get(jobId)!.steps, article: 'processing' } })
+    console.log(`[Job ${jobId}] Generating article for topic: ${topic}`)
+
     const articleContent = await chatgpt.generateArticle({ topic })
+    result.articleTitle = articleContent.title
+    updateJob(jobId, {
+      steps: { ...jobs.get(jobId)!.steps, article: 'completed' },
+      result
+    })
 
     // Step 2: Generate image if requested
     let imagePath: string | null = null
     if (generateImage) {
-      console.log('Generating featured image...')
-      const imageResult = await imageGenerator.generateArticleImage({ topic })
-      imagePath = imageResult.localPath
+      updateJob(jobId, { steps: { ...jobs.get(jobId)!.steps, image: 'processing' } })
+      console.log(`[Job ${jobId}] Generating featured image...`)
+
+      try {
+        const imageResult = await imageGenerator.generateArticleImage({ topic })
+        imagePath = imageResult.localPath
+        result.imagePath = imagePath
+        updateJob(jobId, {
+          steps: { ...jobs.get(jobId)!.steps, image: 'completed' },
+          result
+        })
+      } catch (imgError) {
+        console.error(`[Job ${jobId}] Image generation failed:`, imgError instanceof Error ? imgError.message : imgError)
+        updateJob(jobId, { steps: { ...jobs.get(jobId)!.steps, image: 'failed' } })
+      }
+    } else {
+      updateJob(jobId, { steps: { ...jobs.get(jobId)!.steps, image: 'skipped' } })
     }
+
+    // Generate tags for WordPress and Pinterest
+    const ageGroup = articleContent.content.toLowerCase().includes('toddler')
+      ? 'toddler'
+      : articleContent.content.toLowerCase().includes('infant')
+        ? 'infant'
+        : articleContent.content.toLowerCase().includes('preschool')
+          ? 'preschool'
+          : 'child'
+
+    const articleTags = pinGenerator.generateTags(
+      { title: articleContent.title, content: articleContent.content },
+      ageGroup
+    )
+    console.log(`[Job ${jobId}] Generated ${articleTags.length} tags`)
 
     // Step 3: Upload to WordPress if requested
     let postId: number | undefined
+    let wordpressImageUrl: string | undefined
     if (uploadToWordPress && articleContent) {
-      console.log('Uploading to WordPress...')
-      postId = await wordpress.createPost({
-        title: articleContent.title,
-        content: articleContent.content,
-        status: 'draft'
-      })
+      updateJob(jobId, { steps: { ...jobs.get(jobId)!.steps, wordpress: 'processing' } })
+      console.log(`[Job ${jobId}] Uploading to WordPress...`)
 
-      // Upload featured image
-      if (imagePath && postId) {
-        try {
-          const fileName = `featured-image-${Date.now()}.png`
-          const attachmentId = await wordpress.uploadMedia(imagePath, fileName, 'image/png')
-          await wordpress.setFeaturedImage(postId, attachmentId)
-          console.log('Featured image uploaded and set')
-        } catch (err) {
-          console.error('Failed to upload featured image:', err)
+      // Add footer watermark to article content
+      const articleWithFooter = articleContent.content + `
+<div style="text-align: center; margin-top: 40px; padding-top: 20px; border-top: 2px solid #e8d4c0;">
+  <p style="font-size: 16px; color: #a08c6b; font-weight: bold;">
+    Made With Love By Parentvillage.blog 💛
+  </p>
+</div>`
+
+      try {
+        const postResult = await wordpress.createPost({
+          title: articleContent.title,
+          content: articleWithFooter,
+          tagNames: articleTags, // Add tags to WordPress post
+          status: 'draft'
+        })
+        postId = typeof postResult === 'object' ? postResult.id : postResult
+        result.postId = postId
+        updateJob(jobId, { result })
+
+        // Upload featured image and get the public URL
+        if (imagePath && postId) {
+          try {
+            const fileName = `featured-image-${Date.now()}.png`
+            const mediaResult = await wordpress.uploadMedia(imagePath, fileName, 'image/png')
+            await wordpress.setFeaturedImage(postId, mediaResult.attachmentId)
+            wordpressImageUrl = mediaResult.url
+            console.log(`[Job ${jobId}] Featured image uploaded and set`)
+            if (wordpressImageUrl) {
+              console.log(`[Job ${jobId}] Image URL: ${wordpressImageUrl}`)
+            }
+          } catch (err) {
+            console.error(`[Job ${jobId}] Failed to upload featured image:`, err instanceof Error ? err.message : err)
+          }
         }
+
+        updateJob(jobId, { steps: { ...jobs.get(jobId)!.steps, wordpress: 'completed' } })
+      } catch (wpError) {
+        console.error(`[Job ${jobId}] WordPress upload failed:`, wpError instanceof Error ? wpError.message : wpError)
+        updateJob(jobId, { steps: { ...jobs.get(jobId)!.steps, wordpress: 'failed' } })
       }
+    } else {
+      updateJob(jobId, { steps: { ...jobs.get(jobId)!.steps, wordpress: 'skipped' } })
     }
 
     // Step 4: Generate pins if requested
-    if (generatePins && articleContent && postId) {
-      console.log('Generating Pinterest pins...')
-      const pinData = {
-        title: articleContent.title,
-        content: articleContent.content,
-        postId: postId,
-        link: `${process.env.WORDPRESS_URL}/?p=${postId}`
-      }
+    if (generatePins && articleContent) {
+      updateJob(jobId, { steps: { ...jobs.get(jobId)!.steps, pins: 'processing' } })
+      console.log(`[Job ${jobId}] Generating Pinterest pins...`)
 
-      const variations = pinGenerator.generatePinVariations(pinData)
-      const savedPin = pinGenerator.createSavedPin(pinData, variations, [])
-      pinStorage.savePinDraft(savedPin)
-      console.log(`Generated ${variations.length} pin variations`)
+      try {
+        // Use WordPress media URL if available, otherwise warn about missing public URL
+        const pinImageUrl = wordpressImageUrl || undefined
+        if (!pinImageUrl && imagePath) {
+          console.warn(`[Job ${jobId}] Warning: No public image URL available for pins. Local path: ${imagePath}`)
+        }
+
+        const pinData = {
+          title: articleContent.title,
+          content: articleContent.content,
+          postId: postId,
+          imageUrl: pinImageUrl,
+          link: postId ? `${process.env.WORDPRESS_URL}/?p=${postId}` : undefined
+        }
+
+        const variations = pinGenerator.generatePinVariations(pinData)
+        // Use the same tags generated for WordPress
+        const savedPin = pinGenerator.createSavedPin(pinData, variations, articleTags)
+        pinStorage.savePinDraft(savedPin)
+        result.pinsGenerated = variations.length
+
+        updateJob(jobId, {
+          steps: { ...jobs.get(jobId)!.steps, pins: 'completed' },
+          result
+        })
+        console.log(`[Job ${jobId}] Generated ${variations.length} pin variations`)
+      } catch (pinError) {
+        console.error(`[Job ${jobId}] Pin generation failed:`, pinError instanceof Error ? pinError.message : pinError)
+        updateJob(jobId, { steps: { ...jobs.get(jobId)!.steps, pins: 'failed' } })
+      }
+    } else {
+      updateJob(jobId, { steps: { ...jobs.get(jobId)!.steps, pins: 'skipped' } })
     }
 
-    console.log('Article generation complete')
+    updateJob(jobId, { status: 'completed', result })
+    console.log(`[Job ${jobId}] Article generation complete`)
   } catch (error) {
-    console.error('Article generation failed:', error)
+    const errorMessage = error instanceof Error ? error.message : String(error)
+    console.error(`[Job ${jobId}] Article generation failed:`, errorMessage)
+    updateJob(jobId, {
+      status: 'failed',
+      error: errorMessage,
+      result
+    })
   }
 }
 
@@ -359,6 +674,7 @@ app.get('/api/health', (_req: Request, res: Response) => {
 function generatePinCSV(pins: Array<{
   id: string
   articleTitle: string
+  suggestedTags?: string[]
   variations: Array<{
     angle: string
     title: string
@@ -368,6 +684,22 @@ function generatePinCSV(pins: Array<{
     altText: string
   }>
 }>) {
+  // Helper to format tags for Pinterest description
+  // Pinterest allows hashtags in descriptions - they help with discoverability
+  const formatTagsForDescription = (tags: string[] | undefined, maxTags: number = 5): string => {
+    if (!tags || tags.length === 0) return ''
+
+    // Ensure tags start with # and are properly formatted
+    const formattedTags = tags
+      .slice(0, maxTags)
+      .map(tag => {
+        const cleaned = tag.trim()
+        return cleaned.startsWith('#') ? cleaned : `#${cleaned}`
+      })
+      .filter(tag => tag.length > 1)
+
+    return formattedTags.length > 0 ? '\n\n' + formattedTags.join(' ') : ''
+  }
 
   // Helper to ensure link is a string
   const getLink = (link: any): string => {
@@ -384,15 +716,21 @@ function generatePinCSV(pins: Array<{
 
   // Helper to get a valid image URL for Pinterest bulk upload
   // Media URL is REQUIRED and must be a publicly available URL
-  const getImageUrl = (imageUrl: string | undefined, pinId: string): string => {
-    // If we have a valid URL, use it
-    if (imageUrl && imageUrl.trim() && !imageUrl.includes('[object Object]')) {
-      return imageUrl
+  const getImageUrl = (imageUrl: string | undefined, pinId: string): { url: string; isPlaceholder: boolean } => {
+    // If we have a valid URL (http/https), use it
+    if (imageUrl && imageUrl.trim() &&
+        (imageUrl.startsWith('http://') || imageUrl.startsWith('https://')) &&
+        !imageUrl.includes('[object Object]')) {
+      return { url: imageUrl, isPlaceholder: false }
     }
 
     // Otherwise use a placeholder image service with unique seed
     // Using placeholder.com with a unique ID ensures different image for each pin
-    return `https://via.placeholder.com/1000x1500/e8d5c4/2d3e50?text=Parent+Village+Pin+${pinId.slice(-6)}`
+    console.warn(`Warning: Pin ${pinId} has no valid public image URL, using placeholder`)
+    return {
+      url: `https://via.placeholder.com/1000x1500/e8d5c4/2d3e50?text=Parent+Village+Pin+${pinId.slice(-6)}`,
+      isPlaceholder: true
+    }
   }
 
   // Pinterest Bulk Editor v2 format - 153 columns
@@ -440,21 +778,30 @@ function generatePinCSV(pins: Array<{
     'Slideshow Collections Title', 'Slideshow Collections Description', 'Status', 'Version'
   ]
 
+  // Track placeholder usage for summary warning
+  let placeholderCount = 0
+  let totalPins = 0
+
   // Create rows - one row per pin variation
   const rows: string[][] = []
   pins.forEach((pin) => {
     pin.variations.forEach((variation) => {
+      totalPins++
       // Create an empty row with 153 columns
       const row = new Array(153).fill('')
 
       // Column 62: Media File Name (image URL)
-      row[62] = getImageUrl(variation.imageUrl, pin.id)
+      const imageResult = getImageUrl(variation.imageUrl, pin.id)
+      row[62] = imageResult.url
+      if (imageResult.isPlaceholder) placeholderCount++
 
       // Column 63: Pin Title (required)
       row[63] = variation.title.substring(0, 100)
 
-      // Column 64: Pin Description (max 500 chars)
-      row[64] = variation.description.substring(0, 500)
+      // Column 64: Pin Description (max 500 chars) with hashtags appended
+      const tagsString = formatTagsForDescription(pin.suggestedTags, 5)
+      const descriptionWithTags = variation.description + tagsString
+      row[64] = descriptionWithTags.substring(0, 500)
 
       // Column 65: Organic Pin URL (destination link)
       row[65] = getLink(variation.link)
@@ -490,6 +837,13 @@ function generatePinCSV(pins: Array<{
 
   // Combine with CRLF line endings (Windows standard for CSV)
   const csvContent = [headerRow, ...dataRows].join('\r\n')
+
+  // Log summary warning about placeholder images
+  if (placeholderCount > 0) {
+    console.warn(`\n⚠️  CSV Export Warning: ${placeholderCount}/${totalPins} pins are using placeholder images.`)
+    console.warn(`   Pinterest requires publicly accessible image URLs.`)
+    console.warn(`   To fix: Ensure images are uploaded to WordPress before generating pins.\n`)
+  }
 
   return csvContent
 }

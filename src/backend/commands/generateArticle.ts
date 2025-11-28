@@ -9,6 +9,45 @@ import { parentVillageBotConfig } from '../config/botConfig';
 
 dotenv.config();
 
+// Validate and sanitize topic input
+function validateTopic(topic: string): { valid: boolean; error?: string; sanitized?: string } {
+  if (!topic || typeof topic !== 'string') {
+    return { valid: false, error: 'Topic is required' };
+  }
+
+  const trimmed = topic.trim();
+
+  if (trimmed.length < 5) {
+    return { valid: false, error: 'Topic must be at least 5 characters long' };
+  }
+
+  if (trimmed.length > 500) {
+    return { valid: false, error: 'Topic must be less than 500 characters' };
+  }
+
+  // Check for potentially malicious content (basic sanitization)
+  const suspiciousPatterns = [
+    /<script/i,
+    /javascript:/i,
+    /data:/i,
+    /on\w+=/i,  // onclick=, onerror=, etc.
+  ];
+
+  for (const pattern of suspiciousPatterns) {
+    if (pattern.test(trimmed)) {
+      return { valid: false, error: 'Topic contains invalid characters' };
+    }
+  }
+
+  // Sanitize: remove any HTML tags and excessive whitespace
+  const sanitized = trimmed
+    .replace(/<[^>]*>/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return { valid: true, sanitized };
+}
+
 async function main() {
   const wordpressUrl = process.env.WORDPRESS_URL;
   const wordpressUsername = process.env.WORDPRESS_USERNAME;
@@ -27,6 +66,17 @@ async function main() {
     process.exit(1);
   }
 
+  // Validate topic input
+  const rawTopic = process.argv[2] || 'Building independence in toddlers through daily routines';
+  const validation = validateTopic(rawTopic);
+
+  if (!validation.valid) {
+    console.error(`❌ Invalid topic: ${validation.error}`);
+    process.exit(1);
+  }
+
+  const topic = validation.sanitized!;
+
   try {
     console.log('🚀 Starting article + image generation...\n');
 
@@ -34,9 +84,6 @@ async function main() {
     const chatgpt = new ChatGPTService(openaiApiKey, parentVillageBotConfig);
     const wordpress = new WordPressXmlRpcService(wordpressUrl, wordpressUsername, wordpressPassword);
     const imageService = new ImageGenerationService(openaiApiKey);
-
-    // Generate an article
-    const topic = process.argv[2] || 'Building independence in toddlers through daily routines';
     console.log(`📝 Generating article about: "${topic}"\n`);
     console.log(`Configuration: ${parentVillageBotConfig.publishingFrequency} publishing, ${parentVillageBotConfig.wordCountMin}-${parentVillageBotConfig.wordCountMax} words\n`);
 
@@ -75,6 +122,23 @@ async function main() {
   </p>
 </div>`;
 
+    // Generate tags for WordPress (same tags will be used for Pinterest pins)
+    const pinService = new PinGenerationService(wordpressUrl);
+    const ageGroup = article.content.toLowerCase().includes('toddler')
+      ? 'toddler'
+      : article.content.toLowerCase().includes('infant')
+        ? 'infant'
+        : article.content.toLowerCase().includes('preschool')
+          ? 'preschool'
+          : 'child';
+
+    const articleTags = pinService.generateTags(
+      { title: article.title, content: article.content, excerpt: article.excerpt || '' },
+      ageGroup
+    );
+
+    console.log(`🏷️  Generated tags: ${articleTags.slice(0, 5).join(', ')}...\n`);
+
     // Auto-upload to WordPress as draft
     console.log('📤 Uploading to WordPress as draft...\n');
 
@@ -82,6 +146,7 @@ async function main() {
       title: article.title,
       content: articleWithWatermark,
       excerpt: article.excerpt,
+      tagNames: articleTags, // Add tags to WordPress post
       status: 'draft' // Saves as draft - you review and publish manually
     });
 
@@ -90,10 +155,12 @@ async function main() {
 
     // Upload and set featured image
     console.log('\n🖼️  Uploading featured image...\n');
+    let wordpressImageUrl: string | undefined;
     try {
       const fileName = path.basename(image.localPath);
-      const attachmentId = await wordpress.uploadMedia(image.localPath, fileName);
-      await wordpress.setFeaturedImage(post.id, attachmentId);
+      const mediaResult = await wordpress.uploadMedia(image.localPath, fileName);
+      await wordpress.setFeaturedImage(post.id, mediaResult.attachmentId);
+      wordpressImageUrl = mediaResult.url;
     } catch (error) {
       console.warn('⚠️  Warning: Could not set featured image, but article was created successfully');
       console.warn(`Error: ${error instanceof Error ? error.message : error}\n`);
@@ -108,7 +175,6 @@ async function main() {
     // Auto-generate Pinterest pins
     console.log('\n📌 Generating Pinterest pin variations...\n');
     try {
-      const pinService = new PinGenerationService(wordpressUrl);
       const storageService = new PinStorageService();
 
       const pinArticleData = {
@@ -117,20 +183,13 @@ async function main() {
         excerpt: article.excerpt || '',
         postId: post.id,
         blogUrl: wordpressUrl,
-        imageUrl: image.url
+        // Use WordPress media URL if available, otherwise fall back to DALL-E URL
+        imageUrl: wordpressImageUrl || image.url
       };
 
       const variations = pinService.generatePinVariations(pinArticleData);
-      const ageGroup = article.content.toLowerCase().includes('toddler')
-        ? 'toddler'
-        : article.content.toLowerCase().includes('infant')
-          ? 'infant'
-          : article.content.toLowerCase().includes('preschool')
-            ? 'preschool'
-            : 'child';
-
-      const tags = pinService.generateTags(pinArticleData, ageGroup);
-      const savedPin = pinService.createSavedPin(pinArticleData, variations, tags);
+      // Reuse the same tags generated for WordPress
+      const savedPin = pinService.createSavedPin(pinArticleData, variations, articleTags);
       const pinFilepath = storageService.savePinDraft(savedPin);
 
       console.log(`✅ Generated ${variations.length} Pinterest pin variations!\n`);

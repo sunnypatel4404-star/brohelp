@@ -134,17 +134,31 @@ async function main() {
         'Image Alternative Text'
       ];
 
+      // Format tags for appending to description (Pinterest best practice for discoverability)
+      const formatTags = (tags: string[], maxTags: number = 5): string => {
+        if (!tags || tags.length === 0) return '';
+        const formattedTags = tags
+          .slice(0, maxTags)
+          .map(tag => tag.trim().startsWith('#') ? tag.trim() : `#${tag.trim()}`)
+          .filter(tag => tag.length > 1);
+        return formattedTags.length > 0 ? '\n\n' + formattedTags.join(' ') : '';
+      };
+
+      const tagsString = formatTags(pin.suggestedTags, 5);
       const rows: string[][] = [];
       const campaignName = `${pin.articleTitle.substring(0, 50)}_Campaign`;
       const adGroupName = `${pin.articleTitle.substring(0, 40)}_AdGroup`;
 
       pin.variations.forEach((variation, index) => {
+        // Append tags to description for Pinterest discoverability
+        const descriptionWithTags = (variation.description + tagsString).substring(0, 500);
+
         rows.push([
           campaignName,
           adGroupName,
           `Pin_${index + 1}_${variation.angle.replace(/\//g, '_')}`,
           variation.title,
-          variation.description,
+          descriptionWithTags,
           variation.imageUrl || '', // Pinterest prefers image URLs in the bulk format
           variation.link,
           variation.altText

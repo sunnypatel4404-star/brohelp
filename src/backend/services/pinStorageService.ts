@@ -162,11 +162,17 @@ export class PinStorageService {
 
     const rows = [];
     for (const pin of pins) {
+      // Format tags for appending to description (Pinterest best practice)
+      const tagsForDescription = this.formatTagsForDescription(pin.suggestedTags, 5);
+
       for (const variation of pin.variations) {
+        // Append tags to description for Pinterest discoverability
+        const descriptionWithTags = variation.description + tagsForDescription;
+
         rows.push([
           pin.articleTitle,
           variation.title,
-          variation.description,
+          descriptionWithTags.substring(0, 500), // Pinterest max description length
           variation.link,
           variation.altText,
           variation.boardName || '',
@@ -185,6 +191,23 @@ export class PinStorageService {
     ].join('\n');
 
     return csv;
+  }
+
+  /**
+   * Format tags for Pinterest description
+   */
+  private formatTagsForDescription(tags: string[], maxTags: number = 5): string {
+    if (!tags || tags.length === 0) return '';
+
+    const formattedTags = tags
+      .slice(0, maxTags)
+      .map(tag => {
+        const cleaned = tag.trim();
+        return cleaned.startsWith('#') ? cleaned : `#${cleaned}`;
+      })
+      .filter(tag => tag.length > 1);
+
+    return formattedTags.length > 0 ? '\n\n' + formattedTags.join(' ') : '';
   }
 
   /**
