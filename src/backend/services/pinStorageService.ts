@@ -221,7 +221,7 @@ export class PinStorageService {
    * Update pin status
    */
   updatePinStatus(pinId: string, newStatus: 'draft' | 'approved' | 'published'): SavedPin | null {
-    let pin = this.loadPinDraft(pinId);
+    const pin = this.loadPinDraft(pinId);
 
     if (!pin) {
       return null;
