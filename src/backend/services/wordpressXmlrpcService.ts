@@ -1,4 +1,5 @@
-import axios from 'axios';
+import axios, { AxiosError } from 'axios';
+import * as fs from 'fs';
 
 // Marker class for base64 data - WordPress XML-RPC requires <base64> tags, not <string>
 class Base64Data {
@@ -13,6 +14,22 @@ interface WordPressPost {
   tags?: number[];
   tagNames?: string[];  // Tag names as strings (will be created if they don't exist)
   status?: 'publish' | 'draft';
+}
+
+interface WordPressPostData {
+  post_title: string;
+  post_content: string;
+  post_excerpt: string;
+  post_status: string;
+  post_type: string;
+  terms_category?: number[];
+  terms_post_tag?: number[];
+  terms_names?: { post_tag: string[] };
+}
+
+interface WordPressPostResult {
+  id: number;
+  title?: string;
 }
 
 export class WordPressXmlRpcService {
@@ -40,15 +57,14 @@ export class WordPressXmlRpcService {
    * Axios errors can contain request config with the full XML body including credentials
    */
   private sanitizeError(error: unknown): string {
+    if (axios.isAxiosError(error)) {
+      const axiosError = error as AxiosError;
+      const status = axiosError.response?.status || 'unknown';
+      const statusText = axiosError.response?.statusText || '';
+      const url = axiosError.config?.url ? new URL(axiosError.config.url).hostname : 'unknown';
+      return `HTTP ${status} ${statusText} from ${url}: ${axiosError.message}`;
+    }
     if (error instanceof Error) {
-      // For axios errors, extract safe information only
-      const axiosError = error as any;
-      if (axiosError.isAxiosError) {
-        const status = axiosError.response?.status || 'unknown';
-        const statusText = axiosError.response?.statusText || '';
-        const url = axiosError.config?.url ? new URL(axiosError.config.url).hostname : 'unknown';
-        return `HTTP ${status} ${statusText} from ${url}: ${error.message}`;
-      }
       return error.message;
     }
     // For non-Error objects, convert to string but limit length
@@ -152,7 +168,7 @@ export class WordPressXmlRpcService {
   /**
    * Parse XML-RPC response with full support for structs, arrays, and nested values
    */
-  private parseXmlRpcResponse(responseText: string): any {
+  private parseXmlRpcResponse(responseText: string): unknown {
     // Check for fault first
     if (responseText.includes('<fault>')) {
       const faultStringMatch = responseText.match(
@@ -179,7 +195,7 @@ export class WordPressXmlRpcService {
   /**
    * Parse a single XML-RPC value element
    */
-  private parseXmlValue(xml: string): any {
+  private parseXmlValue(xml: string): unknown {
     const trimmed = xml.trim();
 
     // String (with or without <string> tags - XML-RPC allows bare strings)
@@ -239,8 +255,8 @@ export class WordPressXmlRpcService {
   /**
    * Parse XML-RPC array data
    */
-  private parseXmlArray(dataContent: string): any[] {
-    const result: any[] = [];
+  private parseXmlArray(dataContent: string): unknown[] {
+    const result: unknown[] = [];
     const valueRegex = /<value>([\s\S]*?)<\/value>/g;
     let match;
 
@@ -254,8 +270,8 @@ export class WordPressXmlRpcService {
   /**
    * Parse XML-RPC struct
    */
-  private parseXmlStruct(structContent: string): Record<string, any> {
-    const result: Record<string, any> = {};
+  private parseXmlStruct(structContent: string): Record<string, unknown> {
+    const result: Record<string, unknown> = {};
     const memberRegex = /<member>\s*<name>([^<]+)<\/name>\s*<value>([\s\S]*?)<\/value>\s*<\/member>/g;
     let match;
 
@@ -282,9 +298,9 @@ export class WordPressXmlRpcService {
   /**
    * Create a post via XML-RPC
    */
-  async createPost(post: WordPressPost): Promise<any> {
+  async createPost(post: WordPressPost): Promise<WordPressPostResult> {
     try {
-      const postData = {
+      const postData: WordPressPostData = {
         post_title: post.title,
         post_content: post.content,
         post_excerpt: post.excerpt || '',
@@ -293,12 +309,12 @@ export class WordPressXmlRpcService {
       };
 
       if (post.categories && post.categories.length > 0) {
-        (postData as any).terms_category = post.categories;
+        postData.terms_category = post.categories;
       }
 
       // Support both tag IDs and tag names
       if (post.tags && post.tags.length > 0) {
-        (postData as any).terms_post_tag = post.tags;
+        postData.terms_post_tag = post.tags;
       }
 
       // Use terms_names for string tag names (WordPress will create tags if they don't exist)
@@ -309,7 +325,7 @@ export class WordPressXmlRpcService {
           .filter(tag => tag.length > 0);
 
         if (cleanedTags.length > 0) {
-          (postData as any).terms_names = {
+          postData.terms_names = {
             post_tag: cleanedTags
           };
         }
@@ -328,7 +344,8 @@ export class WordPressXmlRpcService {
         }
       });
 
-      const postId = this.parseXmlRpcResponse(response.data);
+      const postIdResult = this.parseXmlRpcResponse(response.data);
+      const postId = typeof postIdResult === 'number' ? postIdResult : Number(postIdResult);
 
       if (!postId || isNaN(postId)) {
         throw new Error('Failed to get post ID from response');
@@ -349,9 +366,9 @@ export class WordPressXmlRpcService {
   async updatePost(
     postId: number,
     post: Partial<WordPressPost>
-  ): Promise<any> {
+  ): Promise<WordPressPostResult> {
     try {
-      const postData: any = {};
+      const postData: Partial<WordPressPostData> = {};
 
       if (post.title) postData.post_title = post.title;
       if (post.content) postData.post_content = post.content;
@@ -384,7 +401,7 @@ export class WordPressXmlRpcService {
   /**
    * Get a post via XML-RPC
    */
-  async getPost(postId: number): Promise<any> {
+  async getPost(postId: number): Promise<unknown> {
     try {
       const xmlRequest = this.buildXmlRpcRequest('wp.getPost', [
         this.blogId,
@@ -416,7 +433,6 @@ export class WordPressXmlRpcService {
     mimeType: string = 'image/png'
   ): Promise<{ attachmentId: number; url: string }> {
     try {
-      const fs = require('fs');
       const imageData = fs.readFileSync(imagePath);
       const base64Data = imageData.toString('base64');
 
