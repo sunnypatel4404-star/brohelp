@@ -106,7 +106,7 @@ export class DashboardService {
             'utf-8'
           );
           return JSON.parse(content) as SavedPin;
-        } catch (error) {
+        } catch {
           return null;
         }
       })
