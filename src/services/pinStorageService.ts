@@ -195,6 +195,28 @@ export class PinStorageService {
   }
 
   /**
+   * Update pin status
+   */
+  updatePinStatus(pinId: string, newStatus: 'draft' | 'approved' | 'published'): SavedPin | null {
+    let pin = this.loadPinDraft(pinId);
+
+    if (!pin) {
+      return null;
+    }
+
+    pin.status = newStatus;
+
+    if (newStatus === 'approved') {
+      pin.approvedAt = new Date().toISOString();
+    } else if (newStatus === 'published') {
+      pin.publishedAt = new Date().toISOString();
+    }
+
+    this.savePinDraft(pin);
+    return pin;
+  }
+
+  /**
    * Get statistics about saved pins
    */
   getStats(): {

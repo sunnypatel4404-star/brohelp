@@ -22,6 +22,11 @@ pin_exports/
 saved_pins/
 pin_*.json
 
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
 # IDE and editor files
 .vscode/
 .idea/

@@ -44,10 +44,12 @@ Requirements:
 - Include relevant emoji in title
 - Age-segment advice when applicable
 - Include 2-3 "💛 Mom Tip" sections
+- Return ONLY valid JSON (no markdown, no extra text before/after)
+- Ensure all quotes in content are properly escaped with backslashes
 - Format the response as JSON with the following structure:
 {
   "title": "Emoji Article Title Here",
-  "content": "Full HTML-formatted article content here with proper h2/h3 tags...",
+  "content": "Full HTML-formatted article content here with proper h2/h3 tags and escaped quotes...",
   ${includeExcerpt ? '"excerpt": "A brief 1-2 sentence excerpt here..."' : ''}
 }
 
@@ -56,7 +58,8 @@ Remember to:
 - Include specific examples, product names, or book titles
 - End with aspirational language and a Key Takeaway section
 - Make it feel like advice from a knowledgeable friend
-- Keep paragraphs short (2-4 sentences max)`;
+- Keep paragraphs short (2-4 sentences max)
+- IMPORTANT: Ensure the JSON response is valid by escaping all special characters`;
 
     try {
       const message = await this.client.chat.completions.create({
@@ -75,16 +78,45 @@ Remember to:
       // Parse the JSON response - find the JSON object
       let article: GeneratedArticle;
       try {
-        // Try to find and parse JSON
+        // Try to find and parse JSON - look for valid JSON by trying to extract from markers
         const jsonStart = responseText.indexOf('{');
-        const jsonEnd = responseText.lastIndexOf('}');
 
-        if (jsonStart === -1 || jsonEnd === -1) {
+        if (jsonStart === -1) {
           throw new Error('No JSON object found in response');
         }
 
-        const jsonString = responseText.substring(jsonStart, jsonEnd + 1);
-        article = JSON.parse(jsonString);
+        // Try parsing with increasing substring lengths to handle unterminated strings
+        let parsedArticle: GeneratedArticle | null = null;
+
+        // Try from JSON start to the end first
+        for (let endPos = responseText.length; endPos > jsonStart + 10; endPos--) {
+          try {
+            const jsonString = responseText.substring(jsonStart, endPos);
+            parsedArticle = JSON.parse(jsonString);
+            break;
+          } catch (e) {
+            // Try with 100 chars less
+            continue;
+          }
+        }
+
+        if (!parsedArticle) {
+          // If normal parsing failed, try to manually extract title and content
+          const titleMatch = responseText.match(/"title"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"/);
+          const contentMatch = responseText.match(/"content"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)/s);
+
+          if (titleMatch && contentMatch) {
+            parsedArticle = {
+              title: titleMatch[1].replace(/\\"/g, '"'),
+              content: contentMatch[1].replace(/\\"/g, '"').replace(/\\n/g, '\n'),
+              excerpt: ''
+            };
+          } else {
+            throw new Error('Could not extract title and content from response');
+          }
+        }
+
+        article = parsedArticle;
       } catch (parseError) {
         console.error('Failed to parse JSON response');
         console.error('Response was:', responseText.substring(0, 500));

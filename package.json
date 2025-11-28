@@ -7,6 +7,7 @@
     "dev": "ts-node src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
+    "api": "ts-node src/server/apiServer.ts",
     "generate-article": "ts-node src/commands/generateArticle.ts",
     "generate-image": "ts-node src/commands/generateImage.ts",
     "generate-pins": "ts-node src/commands/generatePins.ts",
@@ -24,11 +25,15 @@
   "license": "ISC",
   "dependencies": {
     "axios": "^1.6.0",
+    "cors": "^2.8.5",
     "dotenv": "^16.3.1",
+    "express": "^4.18.2",
     "openai": "^4.20.0",
     "sharp": "^0.34.5"
   },
   "devDependencies": {
+    "@types/cors": "^2.8.14",
+    "@types/express": "^4.17.17",
     "@types/node": "^20.10.0",
     "ts-node": "^10.9.2",
     "typescript": "^5.3.3"
