@@ -207,7 +207,7 @@ Remember to:
     try {
       const parsed = JSON.parse(jsonString);
       return this.validateAndCleanArticle(parsed);
-    } catch (firstError) {
+    } catch {
       // Step 5: Try common fixes
       const fixes = [
         // Fix: Remove trailing comma before closing brace
