@@ -1,6 +1,6 @@
 import * as fs from 'fs';
-import * as path from 'path';
-import { SavedPin } from '../config/pinConfig';
+import { SavedPin, PinMetadata } from '../config/pinConfig';
+import { getDatabase, PinRow, PinVariationRow, ImageRow } from '../database/database';
 
 export interface DashboardStats {
   articles: {
@@ -39,11 +39,9 @@ export interface DashboardData {
 }
 
 export class DashboardService {
-  private pinsDir: string;
   private imagesDir: string;
 
-  constructor(pinsDir: string = './saved_pins', imagesDir: string = './generated_images') {
-    this.pinsDir = pinsDir;
+  constructor(_pinsDir: string = './saved_pins', imagesDir: string = './generated_images') {
     this.imagesDir = imagesDir;
   }
 
@@ -65,10 +63,23 @@ export class DashboardService {
   }
 
   /**
-   * Get aggregated statistics
+   * Get aggregated statistics using SQL
    */
   private getStats(): DashboardStats {
-    const pins = this.loadAllPins();
+    const db = getDatabase();
+
+    // Get pin stats in one query
+    const pinStats = db.prepare(`
+      SELECT
+        COUNT(*) as total,
+        SUM(CASE WHEN status = 'draft' THEN 1 ELSE 0 END) as draft,
+        SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END) as approved,
+        SUM(CASE WHEN status = 'published' THEN 1 ELSE 0 END) as published
+      FROM pins
+    `).get() as { total: number; draft: number; approved: number; published: number };
+
+    // Get image count from database
+    const imageStats = db.prepare('SELECT COUNT(*) as total FROM images').get() as { total: number };
 
     return {
       articles: {
@@ -77,50 +88,50 @@ export class DashboardService {
         published: 0
       },
       pins: {
-        total: pins.length,
-        draft: pins.filter(p => p.status === 'draft').length,
-        approved: pins.filter(p => p.status === 'approved').length,
-        published: pins.filter(p => p.status === 'published').length
+        total: pinStats.total || 0,
+        draft: pinStats.draft || 0,
+        approved: pinStats.approved || 0,
+        published: pinStats.published || 0
       },
       images: {
-        total: this.getGeneratedImages().length
+        total: imageStats.total || 0
       }
     };
   }
 
   /**
-   * Load all pin drafts
+   * Load all pins from database
    */
   private loadAllPins(): SavedPin[] {
-    if (!fs.existsSync(this.pinsDir)) {
-      return [];
-    }
+    const db = getDatabase();
 
-    const files = fs.readdirSync(this.pinsDir).filter(f => f.endsWith('.json'));
+    const pinRows = db.prepare('SELECT * FROM pins ORDER BY created_at DESC').all() as PinRow[];
 
-    return files
-      .map(file => {
-        try {
-          const content = fs.readFileSync(
-            path.join(this.pinsDir, file),
-            'utf-8'
-          );
-          return JSON.parse(content) as SavedPin;
-        } catch {
-          return null;
-        }
-      })
-      .filter((pin): pin is SavedPin => pin !== null)
-      .sort(
-        (a, b) =>
-          new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-      );
+    return pinRows.map(pinRow => {
+      const variationRows = db.prepare(
+        'SELECT * FROM pin_variations WHERE pin_id = ? ORDER BY sort_order'
+      ).all(pinRow.id) as PinVariationRow[];
+
+      return this.rowToSavedPin(pinRow, variationRows);
+    });
   }
 
   /**
-   * Get all generated images
+   * Get all generated images from database
    */
   private getGeneratedImages(): string[] {
+    const db = getDatabase();
+
+    const imageRows = db.prepare(
+      'SELECT filename FROM images ORDER BY created_at DESC'
+    ).all() as { filename: string }[];
+
+    // If database has images, return those
+    if (imageRows.length > 0) {
+      return imageRows.map(row => row.filename);
+    }
+
+    // Fallback to filesystem for backward compatibility
     if (!fs.existsSync(this.imagesDir)) {
       return [];
     }
@@ -151,17 +162,35 @@ export class DashboardService {
       });
     });
 
-    // Add image items
-    images.slice(0, 10).forEach(imageName => {
-      const createdAt = this.getImageDate(imageName);
-      content.push({
-        id: imageName,
-        type: 'image',
-        title: this.extractTopicFromImage(imageName),
-        status: 'completed',
-        createdAt
+    // Add image items (try to get from database first)
+    const db = getDatabase();
+    const recentImages = db.prepare(
+      'SELECT * FROM images ORDER BY created_at DESC LIMIT 10'
+    ).all() as ImageRow[];
+
+    if (recentImages.length > 0) {
+      recentImages.forEach(image => {
+        content.push({
+          id: image.filename,
+          type: 'image',
+          title: image.topic || this.extractTopicFromImage(image.filename),
+          status: 'completed',
+          createdAt: image.created_at
+        });
       });
-    });
+    } else {
+      // Fallback to filename parsing
+      images.slice(0, 10).forEach(imageName => {
+        const createdAt = this.getImageDate(imageName);
+        content.push({
+          id: imageName,
+          type: 'image',
+          title: this.extractTopicFromImage(imageName),
+          status: 'completed',
+          createdAt
+        });
+      });
+    }
 
     // Sort by date
     return content.sort(
@@ -195,37 +224,56 @@ export class DashboardService {
   }
 
   /**
-   * Get pins by status
+   * Get pins by status using SQL
    */
   getPinsByStatus(status: 'draft' | 'approved' | 'published'): SavedPin[] {
-    return this.loadAllPins().filter(p => p.status === status);
+    const db = getDatabase();
+
+    const pinRows = db.prepare(
+      'SELECT * FROM pins WHERE status = ? ORDER BY created_at DESC'
+    ).all(status) as PinRow[];
+
+    return pinRows.map(pinRow => {
+      const variationRows = db.prepare(
+        'SELECT * FROM pin_variations WHERE pin_id = ? ORDER BY sort_order'
+      ).all(pinRow.id) as PinVariationRow[];
+
+      return this.rowToSavedPin(pinRow, variationRows);
+    });
   }
 
   /**
-   * Get summary by topic
+   * Get summary by topic using SQL
    */
   getSummaryByTopic(): Record<string, { pinCount: number; images: number }> {
-    const pins = this.loadAllPins();
+    const db = getDatabase();
+
+    const results = db.prepare(`
+      SELECT
+        p.article_title as topic,
+        COUNT(DISTINCT pv.id) as pinCount
+      FROM pins p
+      LEFT JOIN pin_variations pv ON p.id = pv.pin_id
+      GROUP BY p.article_title
+    `).all() as Array<{ topic: string; pinCount: number }>;
+
     const summary: Record<string, { pinCount: number; images: number }> = {};
 
-    pins.forEach(pin => {
-      const topic = pin.articleTitle;
-      if (!summary[topic]) {
-        summary[topic] = { pinCount: 0, images: 0 };
-      }
-      summary[topic].pinCount += pin.variations.length;
+    results.forEach(row => {
+      summary[row.topic] = { pinCount: row.pinCount || 0, images: 0 };
     });
 
     return summary;
   }
 
   /**
-   * Get activity timeline
+   * Get activity timeline using SQL
    */
   getActivityTimeline(days: number = 7): Array<{ date: string; count: number }> {
-    const pins = this.loadAllPins();
-    const timeline: Record<string, number> = {};
+    const db = getDatabase();
 
+    // Generate date range
+    const timeline: Record<string, number> = {};
     const now = new Date();
     for (let i = 0; i < days; i++) {
       const date = new Date(now);
@@ -234,10 +282,17 @@ export class DashboardService {
       timeline[dateStr] = 0;
     }
 
-    pins.forEach(pin => {
-      const dateStr = pin.createdAt.split('T')[0];
-      if (dateStr in timeline) {
-        timeline[dateStr]++;
+    // Get pin counts by date
+    const pinCounts = db.prepare(`
+      SELECT date(created_at) as date, COUNT(*) as count
+      FROM pins
+      WHERE date(created_at) >= date('now', '-' || ? || ' days')
+      GROUP BY date(created_at)
+    `).all(days) as Array<{ date: string; count: number }>;
+
+    pinCounts.forEach(row => {
+      if (row.date in timeline) {
+        timeline[row.date] = row.count;
       }
     });
 
@@ -338,5 +393,35 @@ export class DashboardService {
     report += `${'═'.repeat(50)}\n`;
 
     return report;
+  }
+
+  /**
+   * Convert database rows to SavedPin object
+   */
+  private rowToSavedPin(pinRow: PinRow, variationRows: PinVariationRow[]): SavedPin {
+    const variations: PinMetadata[] = variationRows.map(v => ({
+      title: v.title,
+      description: v.description,
+      link: v.link,
+      imageUrl: v.image_url ?? undefined,
+      altText: v.alt_text ?? '',
+      boardName: v.board_name ?? undefined,
+      dominantColor: v.dominant_color ?? undefined,
+      angle: v.angle
+    }));
+
+    return {
+      id: pinRow.id,
+      articleTitle: pinRow.article_title,
+      articleId: pinRow.article_id ?? undefined,
+      postId: pinRow.post_id ?? undefined,
+      variations,
+      suggestedTags: JSON.parse(pinRow.suggested_tags || '[]'),
+      createdAt: pinRow.created_at,
+      status: pinRow.status as 'draft' | 'approved' | 'published',
+      approvedAt: pinRow.approved_at ?? undefined,
+      publishedAt: pinRow.published_at ?? undefined,
+      notes: pinRow.notes ?? undefined
+    };
   }
 }

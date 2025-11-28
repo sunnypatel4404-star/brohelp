@@ -124,6 +124,39 @@ export async function saveSettings(settings: Partial<Settings>) {
   return response.data
 }
 
+// ============ JOBS ============
+
+export interface JobStatus {
+  id: string
+  status: 'queued' | 'processing' | 'completed' | 'failed'
+  topic: string
+  createdAt: string
+  updatedAt: string
+  result?: {
+    articleTitle?: string
+    postId?: number
+    imagePath?: string
+    pinsGenerated?: number
+  }
+  error?: string
+  steps: {
+    article: 'pending' | 'processing' | 'completed' | 'failed'
+    image: 'pending' | 'processing' | 'completed' | 'failed' | 'skipped'
+    wordpress: 'pending' | 'processing' | 'completed' | 'failed' | 'skipped'
+    pins: 'pending' | 'processing' | 'completed' | 'failed' | 'skipped'
+  }
+}
+
+export async function getJobStatus(jobId: string): Promise<JobStatus> {
+  const response = await api.get(`/jobs/${jobId}`)
+  return response.data
+}
+
+export async function getJobs(): Promise<{ jobs: JobStatus[]; count: number }> {
+  const response = await api.get('/jobs')
+  return response.data
+}
+
 // ============ HEALTH CHECK ============
 
 export async function checkHealth() {

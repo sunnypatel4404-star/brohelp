@@ -2,6 +2,7 @@ import OpenAI from 'openai';
 import * as fs from 'fs';
 import * as path from 'path';
 import sharp from 'sharp';
+import { getDatabase } from '../database/database';
 
 interface ImageGenerationRequest {
   topic: string;
@@ -62,6 +63,9 @@ export class ImageGenerationService {
       // Add watermark to the image
       console.log('💛 Adding watermark...\n');
       localPath = await this.addWatermark(localPath);
+
+      // Save image metadata to database
+      this.saveImageMetadata(localPath, topic, prompt);
 
       console.log(`✓ Image generated and saved with watermark`);
 
@@ -176,6 +180,33 @@ Make it suitable for a parenting and early childhood education audience. The ill
     } catch (error) {
       console.error('Error listing images:', error);
       return [];
+    }
+  }
+
+  /**
+   * Save image metadata to database
+   */
+  private saveImageMetadata(localPath: string, topic: string, _prompt?: string): void {
+    try {
+      const db = getDatabase();
+      const filename = path.basename(localPath);
+      const stats = fs.statSync(localPath);
+
+      db.prepare(`
+        INSERT INTO images (filename, topic, local_path, created_at, file_size)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(
+        filename,
+        topic,
+        localPath,
+        new Date().toISOString(),
+        stats.size
+      );
+
+      console.log(`📊 Image metadata saved to database: ${filename}`);
+    } catch (error) {
+      // Log but don't fail - metadata is supplementary
+      console.error('Warning: Failed to save image metadata:', error);
     }
   }
 

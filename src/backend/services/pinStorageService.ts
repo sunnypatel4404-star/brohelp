@@ -1,45 +1,81 @@
-import * as fs from 'fs';
-import * as path from 'path';
-import { SavedPin } from '../config/pinConfig';
+import { SavedPin, PinMetadata } from '../config/pinConfig';
+import { getDatabase, PinRow, PinVariationRow } from '../database/database';
 
 export class PinStorageService {
+  // storageDir kept for backward compatibility but not used
   private storageDir: string;
 
   constructor(storageDir: string = './saved_pins') {
     this.storageDir = storageDir;
-
-    // Create directory if it doesn't exist
-    if (!fs.existsSync(this.storageDir)) {
-      fs.mkdirSync(this.storageDir, { recursive: true });
-    }
+    // Database is initialized on first access via getDatabase()
   }
 
   /**
-   * Save pin draft to JSON file
+   * Save pin draft to database
    */
   savePinDraft(pin: SavedPin): string {
-    const filename = `${pin.id}.json`;
-    const filepath = path.join(this.storageDir, filename);
+    const db = getDatabase();
 
-    fs.writeFileSync(filepath, JSON.stringify(pin, null, 2));
+    // Insert pin
+    db.prepare(`
+      INSERT INTO pins (id, article_title, article_id, post_id, suggested_tags, created_at, status, approved_at, published_at, notes)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      pin.id,
+      pin.articleTitle,
+      pin.articleId ?? null,
+      pin.postId ?? null,
+      JSON.stringify(pin.suggestedTags || []),
+      pin.createdAt,
+      pin.status,
+      pin.approvedAt ?? null,
+      pin.publishedAt ?? null,
+      pin.notes ?? null
+    );
 
-    console.log(`📁 Pin draft saved: ${filename}`);
+    // Insert variations
+    const insertVariation = db.prepare(`
+      INSERT INTO pin_variations (pin_id, title, description, link, image_url, alt_text, board_name, dominant_color, angle, sort_order)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
 
-    return filepath;
+    pin.variations.forEach((v, i) => {
+      insertVariation.run(
+        pin.id,
+        v.title,
+        v.description,
+        v.link,
+        v.imageUrl ?? null,
+        v.altText ?? null,
+        v.boardName ?? null,
+        v.dominantColor ?? null,
+        v.angle,
+        i
+      );
+    });
+
+    console.log(`📁 Pin draft saved: ${pin.id}`);
+
+    return pin.id;
   }
 
   /**
-   * Load pin draft from file
+   * Load pin draft from database
    */
   loadPinDraft(pinId: string): SavedPin | null {
-    const filepath = path.join(this.storageDir, `${pinId}.json`);
+    const db = getDatabase();
 
-    if (!fs.existsSync(filepath)) {
+    const pinRow = db.prepare('SELECT * FROM pins WHERE id = ?').get(pinId) as PinRow | undefined;
+
+    if (!pinRow) {
       return null;
     }
 
-    const content = fs.readFileSync(filepath, 'utf-8');
-    return JSON.parse(content) as SavedPin;
+    const variationRows = db.prepare(
+      'SELECT * FROM pin_variations WHERE pin_id = ? ORDER BY sort_order'
+    ).all(pinId) as PinVariationRow[];
+
+    return this.rowToSavedPin(pinRow, variationRows);
   }
 
   /**
@@ -53,6 +89,9 @@ export class PinStorageService {
     }
 
     const updated = { ...pin, ...updates };
+
+    // Delete and re-insert (simpler than partial updates for variations)
+    this.deletePinDraft(pinId);
     this.savePinDraft(updated);
 
     return updated;
@@ -62,80 +101,86 @@ export class PinStorageService {
    * Approve a pin draft (change status to approved)
    */
   approvePinDraft(pinId: string, notes?: string): SavedPin | null {
-    return this.updatePinDraft(pinId, {
-      status: 'approved',
-      approvedAt: new Date().toISOString(),
-      notes
-    });
+    return this.updatePinStatus(pinId, 'approved', notes);
   }
 
   /**
    * Mark pin as published
    */
   publishPin(pinId: string): SavedPin | null {
-    return this.updatePinDraft(pinId, {
-      status: 'published',
-      publishedAt: new Date().toISOString()
-    });
+    return this.updatePinStatus(pinId, 'published');
   }
 
   /**
    * List all pin drafts
    */
   listPinDrafts(): SavedPin[] {
-    const files = fs.readdirSync(this.storageDir).filter(f =>
-      f.endsWith('.json')
-    );
+    const db = getDatabase();
 
-    return files
-      .map(file => {
-        try {
-          const content = fs.readFileSync(
-            path.join(this.storageDir, file),
-            'utf-8'
-          );
-          return JSON.parse(content) as SavedPin;
-        } catch (error) {
-          console.error(`Error reading ${file}:`, error);
-          return null;
-        }
-      })
-      .filter((pin): pin is SavedPin => pin !== null);
+    const pinRows = db.prepare('SELECT * FROM pins ORDER BY created_at DESC').all() as PinRow[];
+
+    return pinRows.map(pinRow => {
+      const variationRows = db.prepare(
+        'SELECT * FROM pin_variations WHERE pin_id = ? ORDER BY sort_order'
+      ).all(pinRow.id) as PinVariationRow[];
+
+      return this.rowToSavedPin(pinRow, variationRows);
+    });
   }
 
   /**
    * List pins by status
    */
   listPinsByStatus(status: 'draft' | 'approved' | 'published'): SavedPin[] {
-    return this.listPinDrafts().filter(pin => pin.status === status);
+    const db = getDatabase();
+
+    const pinRows = db.prepare(
+      'SELECT * FROM pins WHERE status = ? ORDER BY created_at DESC'
+    ).all(status) as PinRow[];
+
+    return pinRows.map(pinRow => {
+      const variationRows = db.prepare(
+        'SELECT * FROM pin_variations WHERE pin_id = ? ORDER BY sort_order'
+      ).all(pinRow.id) as PinVariationRow[];
+
+      return this.rowToSavedPin(pinRow, variationRows);
+    });
   }
 
   /**
    * Get recently created pins
    */
   getRecentPins(count: number = 5): SavedPin[] {
-    return this.listPinDrafts()
-      .sort(
-        (a, b) =>
-          new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-      )
-      .slice(0, count);
+    const db = getDatabase();
+
+    const pinRows = db.prepare(
+      'SELECT * FROM pins ORDER BY created_at DESC LIMIT ?'
+    ).all(count) as PinRow[];
+
+    return pinRows.map(pinRow => {
+      const variationRows = db.prepare(
+        'SELECT * FROM pin_variations WHERE pin_id = ? ORDER BY sort_order'
+      ).all(pinRow.id) as PinVariationRow[];
+
+      return this.rowToSavedPin(pinRow, variationRows);
+    });
   }
 
   /**
    * Delete a pin draft
    */
   deletePinDraft(pinId: string): boolean {
-    const filepath = path.join(this.storageDir, `${pinId}.json`);
+    const db = getDatabase();
 
-    if (!fs.existsSync(filepath)) {
-      return false;
+    const result = db.prepare('DELETE FROM pins WHERE id = ?').run(pinId);
+    // Variations are deleted automatically via CASCADE
+
+    if (result.changes > 0) {
+      console.log(`🗑️  Pin draft deleted: ${pinId}`);
+      return true;
     }
 
-    fs.unlinkSync(filepath);
-    console.log(`🗑️  Pin draft deleted: ${pinId}`);
-
-    return true;
+    return false;
   }
 
   /**
@@ -211,7 +256,7 @@ export class PinStorageService {
   }
 
   /**
-   * Get storage directory path
+   * Get storage directory path (kept for backward compatibility)
    */
   getStorageDir(): string {
     return this.storageDir;
@@ -220,23 +265,32 @@ export class PinStorageService {
   /**
    * Update pin status
    */
-  updatePinStatus(pinId: string, newStatus: 'draft' | 'approved' | 'published'): SavedPin | null {
+  updatePinStatus(pinId: string, newStatus: 'draft' | 'approved' | 'published', notes?: string): SavedPin | null {
+    const db = getDatabase();
+
     const pin = this.loadPinDraft(pinId);
 
     if (!pin) {
       return null;
     }
 
-    pin.status = newStatus;
+    const now = new Date().toISOString();
+    let approvedAt = pin.approvedAt;
+    let publishedAt = pin.publishedAt;
 
     if (newStatus === 'approved') {
-      pin.approvedAt = new Date().toISOString();
+      approvedAt = now;
     } else if (newStatus === 'published') {
-      pin.publishedAt = new Date().toISOString();
+      publishedAt = now;
     }
 
-    this.savePinDraft(pin);
-    return pin;
+    db.prepare(`
+      UPDATE pins
+      SET status = ?, approved_at = ?, published_at = ?, notes = COALESCE(?, notes)
+      WHERE id = ?
+    `).run(newStatus, approvedAt, publishedAt, notes ?? null, pinId);
+
+    return this.loadPinDraft(pinId);
   }
 
   /**
@@ -248,13 +302,52 @@ export class PinStorageService {
     approved: number;
     published: number;
   } {
-    const pins = this.listPinDrafts();
+    const db = getDatabase();
+
+    const result = db.prepare(`
+      SELECT
+        COUNT(*) as total,
+        SUM(CASE WHEN status = 'draft' THEN 1 ELSE 0 END) as draft,
+        SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END) as approved,
+        SUM(CASE WHEN status = 'published' THEN 1 ELSE 0 END) as published
+      FROM pins
+    `).get() as { total: number; draft: number; approved: number; published: number };
 
     return {
-      total: pins.length,
-      draft: pins.filter(p => p.status === 'draft').length,
-      approved: pins.filter(p => p.status === 'approved').length,
-      published: pins.filter(p => p.status === 'published').length
+      total: result.total || 0,
+      draft: result.draft || 0,
+      approved: result.approved || 0,
+      published: result.published || 0
+    };
+  }
+
+  /**
+   * Convert database rows to SavedPin object
+   */
+  private rowToSavedPin(pinRow: PinRow, variationRows: PinVariationRow[]): SavedPin {
+    const variations: PinMetadata[] = variationRows.map(v => ({
+      title: v.title,
+      description: v.description,
+      link: v.link,
+      imageUrl: v.image_url ?? undefined,
+      altText: v.alt_text ?? '',
+      boardName: v.board_name ?? undefined,
+      dominantColor: v.dominant_color ?? undefined,
+      angle: v.angle
+    }));
+
+    return {
+      id: pinRow.id,
+      articleTitle: pinRow.article_title,
+      articleId: pinRow.article_id ?? undefined,
+      postId: pinRow.post_id ?? undefined,
+      variations,
+      suggestedTags: JSON.parse(pinRow.suggested_tags || '[]'),
+      createdAt: pinRow.created_at,
+      status: pinRow.status as 'draft' | 'approved' | 'published',
+      approvedAt: pinRow.approved_at ?? undefined,
+      publishedAt: pinRow.published_at ?? undefined,
+      notes: pinRow.notes ?? undefined
     };
   }
 }

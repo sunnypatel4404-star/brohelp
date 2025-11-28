@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { getPins, approvePin, exportPinsAsCSV, getErrorMessage } from '../services/api'
 
 interface PinVariation {
@@ -19,6 +20,7 @@ interface Pin {
 }
 
 export default function PinManager() {
+  const [searchParams, setSearchParams] = useSearchParams()
   const [pins, setPins] = useState<Pin[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -29,6 +31,19 @@ export default function PinManager() {
   useEffect(() => {
     loadPins()
   }, [])
+
+  // Auto-select pin from URL parameter
+  useEffect(() => {
+    const pinId = searchParams.get('id')
+    if (pinId && pins.length > 0 && !selectedPin) {
+      const pin = pins.find(p => p.id === pinId)
+      if (pin) {
+        setSelectedPin(pin)
+        // Clear the URL parameter
+        setSearchParams({})
+      }
+    }
+  }, [pins, searchParams, selectedPin, setSearchParams])
 
   const loadPins = async () => {
     try {

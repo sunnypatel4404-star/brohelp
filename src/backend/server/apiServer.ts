@@ -8,10 +8,11 @@ import { PinGenerationService } from '../services/pinGenerationService'
 import { PinStorageService } from '../services/pinStorageService'
 import { DashboardService } from '../services/dashboardService'
 import { BotConfig } from '../config/botConfig'
+import { getDatabase, JobRow } from '../database/database'
 
 dotenv.config()
 
-// ============ JOB TRACKING SYSTEM ============
+// ============ JOB TRACKING SYSTEM (SQLite-backed) ============
 
 interface JobStatus {
   id: string
@@ -34,41 +35,93 @@ interface JobStatus {
   }
 }
 
-// In-memory job store (in production, use Redis or a database)
-const jobs = new Map<string, JobStatus>()
+// Convert database row to JobStatus
+function rowToJobStatus(row: JobRow): JobStatus {
+  return {
+    id: row.id,
+    status: row.status as JobStatus['status'],
+    topic: row.topic,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    result: row.result ? JSON.parse(row.result) : undefined,
+    error: row.error ?? undefined,
+    steps: JSON.parse(row.steps)
+  }
+}
 
 function createJob(topic: string): JobStatus {
-  const job: JobStatus = {
-    id: `job_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+  const db = getDatabase()
+  const id = `job_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+  const now = new Date().toISOString()
+  const steps = {
+    article: 'pending',
+    image: 'pending',
+    wordpress: 'pending',
+    pins: 'pending'
+  }
+
+  db.prepare(`
+    INSERT INTO jobs (id, status, topic, created_at, updated_at, steps)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(id, 'queued', topic, now, now, JSON.stringify(steps))
+
+  return {
+    id,
     status: 'queued',
     topic,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    steps: {
-      article: 'pending',
-      image: 'pending',
-      wordpress: 'pending',
-      pins: 'pending'
-    }
+    createdAt: now,
+    updatedAt: now,
+    steps: steps as JobStatus['steps']
   }
-  jobs.set(job.id, job)
-  return job
+}
+
+function getJob(jobId: string): JobStatus | null {
+  const db = getDatabase()
+  const row = db.prepare('SELECT * FROM jobs WHERE id = ?').get(jobId) as JobRow | undefined
+  return row ? rowToJobStatus(row) : null
 }
 
 function updateJob(jobId: string, updates: Partial<JobStatus>): void {
-  const job = jobs.get(jobId)
-  if (job) {
-    Object.assign(job, updates, { updatedAt: new Date().toISOString() })
+  const db = getDatabase()
+  const now = new Date().toISOString()
+
+  // Build dynamic update
+  const sets: string[] = ['updated_at = ?']
+  const values: (string | null)[] = [now]
+
+  if (updates.status !== undefined) {
+    sets.push('status = ?')
+    values.push(updates.status)
   }
+  if (updates.result !== undefined) {
+    sets.push('result = ?')
+    values.push(JSON.stringify(updates.result))
+  }
+  if (updates.error !== undefined) {
+    sets.push('error = ?')
+    values.push(updates.error)
+  }
+  if (updates.steps !== undefined) {
+    sets.push('steps = ?')
+    values.push(JSON.stringify(updates.steps))
+  }
+
+  values.push(jobId)
+
+  db.prepare(`UPDATE jobs SET ${sets.join(', ')} WHERE id = ?`).run(...values)
 }
 
 // Clean up old jobs (keep last 100)
 function cleanupOldJobs(): void {
-  if (jobs.size > 100) {
-    const sortedJobs = Array.from(jobs.entries())
-      .sort((a, b) => new Date(b[1].createdAt).getTime() - new Date(a[1].createdAt).getTime())
+  const db = getDatabase()
+  const count = db.prepare('SELECT COUNT(*) as count FROM jobs').get() as { count: number }
 
-    sortedJobs.slice(100).forEach(([id]) => jobs.delete(id))
+  if (count.count > 100) {
+    db.prepare(`
+      DELETE FROM jobs WHERE id NOT IN (
+        SELECT id FROM jobs ORDER BY created_at DESC LIMIT 100
+      )
+    `).run()
   }
 }
 
@@ -272,7 +325,7 @@ app.post('/api/articles/generate', generateRateLimitMiddleware, async (req: Requ
 
 // Get job status endpoint
 app.get('/api/jobs/:id', (req: Request, res: Response) => {
-  const job = jobs.get(req.params.id)
+  const job = getJob(req.params.id)
 
   if (!job) {
     res.status(404).json({ error: 'Job not found' })
@@ -284,9 +337,12 @@ app.get('/api/jobs/:id', (req: Request, res: Response) => {
 
 // List all jobs
 app.get('/api/jobs', (_req: Request, res: Response) => {
-  const allJobs = Array.from(jobs.values())
-    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
-    .slice(0, 50)
+  const db = getDatabase()
+  const rows = db.prepare(
+    'SELECT * FROM jobs ORDER BY created_at DESC LIMIT 50'
+  ).all() as JobRow[]
+
+  const allJobs = rows.map(rowToJobStatus)
 
   res.json({ jobs: allJobs, count: allJobs.length })
 })
@@ -304,20 +360,20 @@ async function generateArticleBackground(
     updateJob(jobId, { status: 'processing' })
 
     // Step 1: Generate article content
-    updateJob(jobId, { steps: { ...jobs.get(jobId)!.steps, article: 'processing' } })
+    updateJob(jobId, { steps: { ...getJob(jobId)!.steps, article: 'processing' } })
     console.log(`[Job ${jobId}] Generating article for topic: ${topic}`)
 
     const articleContent = await chatgpt.generateArticle({ topic })
     result.articleTitle = articleContent.title
     updateJob(jobId, {
-      steps: { ...jobs.get(jobId)!.steps, article: 'completed' },
+      steps: { ...getJob(jobId)!.steps, article: 'completed' },
       result
     })
 
     // Step 2: Generate image if requested
     let imagePath: string | null = null
     if (generateImage) {
-      updateJob(jobId, { steps: { ...jobs.get(jobId)!.steps, image: 'processing' } })
+      updateJob(jobId, { steps: { ...getJob(jobId)!.steps, image: 'processing' } })
       console.log(`[Job ${jobId}] Generating featured image...`)
 
       try {
@@ -325,15 +381,15 @@ async function generateArticleBackground(
         imagePath = imageResult.localPath
         result.imagePath = imagePath
         updateJob(jobId, {
-          steps: { ...jobs.get(jobId)!.steps, image: 'completed' },
+          steps: { ...getJob(jobId)!.steps, image: 'completed' },
           result
         })
       } catch (imgError) {
         console.error(`[Job ${jobId}] Image generation failed:`, imgError instanceof Error ? imgError.message : imgError)
-        updateJob(jobId, { steps: { ...jobs.get(jobId)!.steps, image: 'failed' } })
+        updateJob(jobId, { steps: { ...getJob(jobId)!.steps, image: 'failed' } })
       }
     } else {
-      updateJob(jobId, { steps: { ...jobs.get(jobId)!.steps, image: 'skipped' } })
+      updateJob(jobId, { steps: { ...getJob(jobId)!.steps, image: 'skipped' } })
     }
 
     // Generate tags for WordPress and Pinterest
@@ -355,7 +411,7 @@ async function generateArticleBackground(
     let postId: number | undefined
     let wordpressImageUrl: string | undefined
     if (uploadToWordPress && articleContent) {
-      updateJob(jobId, { steps: { ...jobs.get(jobId)!.steps, wordpress: 'processing' } })
+      updateJob(jobId, { steps: { ...getJob(jobId)!.steps, wordpress: 'processing' } })
       console.log(`[Job ${jobId}] Uploading to WordPress...`)
 
       // Add footer watermark to article content
@@ -393,18 +449,18 @@ async function generateArticleBackground(
           }
         }
 
-        updateJob(jobId, { steps: { ...jobs.get(jobId)!.steps, wordpress: 'completed' } })
+        updateJob(jobId, { steps: { ...getJob(jobId)!.steps, wordpress: 'completed' } })
       } catch (wpError) {
         console.error(`[Job ${jobId}] WordPress upload failed:`, wpError instanceof Error ? wpError.message : wpError)
-        updateJob(jobId, { steps: { ...jobs.get(jobId)!.steps, wordpress: 'failed' } })
+        updateJob(jobId, { steps: { ...getJob(jobId)!.steps, wordpress: 'failed' } })
       }
     } else {
-      updateJob(jobId, { steps: { ...jobs.get(jobId)!.steps, wordpress: 'skipped' } })
+      updateJob(jobId, { steps: { ...getJob(jobId)!.steps, wordpress: 'skipped' } })
     }
 
     // Step 4: Generate pins if requested
     if (generatePins && articleContent) {
-      updateJob(jobId, { steps: { ...jobs.get(jobId)!.steps, pins: 'processing' } })
+      updateJob(jobId, { steps: { ...getJob(jobId)!.steps, pins: 'processing' } })
       console.log(`[Job ${jobId}] Generating Pinterest pins...`)
 
       try {
@@ -429,16 +485,16 @@ async function generateArticleBackground(
         result.pinsGenerated = variations.length
 
         updateJob(jobId, {
-          steps: { ...jobs.get(jobId)!.steps, pins: 'completed' },
+          steps: { ...getJob(jobId)!.steps, pins: 'completed' },
           result
         })
         console.log(`[Job ${jobId}] Generated ${variations.length} pin variations`)
       } catch (pinError) {
         console.error(`[Job ${jobId}] Pin generation failed:`, pinError instanceof Error ? pinError.message : pinError)
-        updateJob(jobId, { steps: { ...jobs.get(jobId)!.steps, pins: 'failed' } })
+        updateJob(jobId, { steps: { ...getJob(jobId)!.steps, pins: 'failed' } })
       }
     } else {
-      updateJob(jobId, { steps: { ...jobs.get(jobId)!.steps, pins: 'skipped' } })
+      updateJob(jobId, { steps: { ...getJob(jobId)!.steps, pins: 'skipped' } })
     }
 
     updateJob(jobId, { status: 'completed', result })
