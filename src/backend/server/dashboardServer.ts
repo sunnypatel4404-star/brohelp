@@ -33,13 +33,14 @@ export function startDashboardServer(): void {
           serveHTML(res);
           break;
 
-        case '/api/dashboard':
+        case '/api/dashboard': {
           const data = dashboardService.getDashboardData();
           res.writeHead(200);
           res.end(JSON.stringify(data, null, 2));
           break;
+        }
 
-        case '/api/stats':
+        case '/api/stats': {
           const stats = {
             stats: dashboardService.getDashboardData().stats,
             timeline: dashboardService.getActivityTimeline(7)
@@ -47,18 +48,21 @@ export function startDashboardServer(): void {
           res.writeHead(200);
           res.end(JSON.stringify(stats, null, 2));
           break;
+        }
 
-        case '/api/pins':
+        case '/api/pins': {
           const pins = dashboardService.getDashboardData().allPins;
           res.writeHead(200);
           res.end(JSON.stringify(pins, null, 2));
           break;
+        }
 
-        case '/api/images':
+        case '/api/images': {
           const images = dashboardService.getDashboardData().generatedImages;
           res.writeHead(200);
           res.end(JSON.stringify(images, null, 2));
           break;
+        }
 
         default:
           res.writeHead(404);
