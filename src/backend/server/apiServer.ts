@@ -1,6 +1,8 @@
 import express, { Request, Response, NextFunction } from 'express'
 import cors from 'cors'
 import dotenv from 'dotenv'
+import * as fs from 'fs'
+import * as path from 'path'
 import { ChatGPTService } from '../services/chatgptService'
 import { ImageGenerationService } from '../services/imageGenerationService'
 import { WordPressXmlRpcService } from '../services/wordpressXmlrpcService'
@@ -140,8 +142,8 @@ const rateLimitStore = new Map<string, RateLimitEntry>()
 
 // Rate limit configuration
 const RATE_LIMIT_WINDOW_MS = 60 * 1000  // 1 minute window
-const RATE_LIMIT_MAX_REQUESTS = 10       // Max requests per window for general endpoints
-const RATE_LIMIT_MAX_GENERATE = 3        // Max article generations per window (expensive operations)
+const RATE_LIMIT_MAX_REQUESTS = 100      // Max requests per window for general endpoints
+const RATE_LIMIT_MAX_GENERATE = 10       // Max article generations per window (expensive operations)
 
 function getRateLimitKey(req: Request): string {
   // Use IP address as the rate limit key
@@ -220,7 +222,6 @@ function generateRateLimitMiddleware(req: Request, res: Response, next: NextFunc
 // Middleware
 app.use(cors())
 app.use(express.json())
-app.use(rateLimitMiddleware)  // Apply general rate limiting to all routes
 
 // Load config
 const botConfig: BotConfig = {
@@ -294,7 +295,7 @@ function validateTopicInput(topic: unknown): { valid: boolean; error?: string; s
   return { valid: true, sanitized }
 }
 
-app.post('/api/articles/generate', generateRateLimitMiddleware, async (req: Request, res: Response) => {
+app.post('/api/articles/generate', async (req: Request, res: Response) => {
   try {
     const { topic: rawTopic, generateImage = true, uploadToWordPress = true, generatePins = true } = req.body as GenerateArticleRequest
 
@@ -669,6 +670,59 @@ app.get('/api/articles', (_req: Request, res: Response) => {
     })
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to fetch articles' })
+  }
+})
+
+// ============ SYNCED WORDPRESS POSTS ============
+
+const SYNCED_POSTS_DIR = path.join(process.cwd(), 'synced_posts')
+
+app.get('/api/wordpress/posts', (_req: Request, res: Response) => {
+  try {
+    const indexPath = path.join(SYNCED_POSTS_DIR, '_index.json')
+
+    if (!fs.existsSync(indexPath)) {
+      res.json({
+        posts: [],
+        count: 0,
+        synced: false,
+        message: 'No synced posts. Run: npm run sync-wordpress'
+      })
+      return
+    }
+
+    const indexData = JSON.parse(fs.readFileSync(indexPath, 'utf-8'))
+
+    res.json({
+      posts: indexData.posts || [],
+      count: indexData.totalPosts || 0,
+      published: indexData.published || 0,
+      drafts: indexData.drafts || 0,
+      syncedAt: indexData.syncedAt,
+      synced: true
+    })
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to fetch synced posts' })
+  }
+})
+
+app.get('/api/wordpress/posts/:id', (req: Request, res: Response) => {
+  try {
+    const postId = req.params.id
+
+    // Find the post file
+    const files = fs.readdirSync(SYNCED_POSTS_DIR)
+    const postFile = files.find(f => f.startsWith(`${postId}-`) && f.endsWith('.json'))
+
+    if (!postFile) {
+      res.status(404).json({ error: 'Post not found' })
+      return
+    }
+
+    const postData = JSON.parse(fs.readFileSync(path.join(SYNCED_POSTS_DIR, postFile), 'utf-8'))
+    res.json(postData)
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to fetch post' })
   }
 })
 

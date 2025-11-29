@@ -32,6 +32,18 @@ interface WordPressPostResult {
   title?: string;
 }
 
+export interface WordPressSyncedPost {
+  id: number;
+  title: string;
+  content: string;
+  excerpt: string;
+  status: string;
+  date: string;
+  modified: string;
+  link: string;
+  slug: string;
+}
+
 export class WordPressXmlRpcService {
   private xmlrpcUrl: string;
   private username: string;
@@ -253,18 +265,52 @@ export class WordPressXmlRpcService {
   }
 
   /**
+   * Extract balanced XML elements (handles nested tags)
+   */
+  private extractBalancedElements(content: string, tagName: string): string[] {
+    const results: string[] = [];
+    const openTag = `<${tagName}>`;
+    const closeTag = `</${tagName}>`;
+    let pos = 0;
+
+    while (pos < content.length) {
+      const startIdx = content.indexOf(openTag, pos);
+      if (startIdx === -1) break;
+
+      let depth = 1;
+      let searchPos = startIdx + openTag.length;
+
+      while (depth > 0 && searchPos < content.length) {
+        const nextOpen = content.indexOf(openTag, searchPos);
+        const nextClose = content.indexOf(closeTag, searchPos);
+
+        if (nextClose === -1) break;
+
+        if (nextOpen !== -1 && nextOpen < nextClose) {
+          depth++;
+          searchPos = nextOpen + openTag.length;
+        } else {
+          depth--;
+          if (depth === 0) {
+            const innerContent = content.substring(startIdx + openTag.length, nextClose);
+            results.push(innerContent);
+          }
+          searchPos = nextClose + closeTag.length;
+        }
+      }
+
+      pos = searchPos;
+    }
+
+    return results;
+  }
+
+  /**
    * Parse XML-RPC array data
    */
   private parseXmlArray(dataContent: string): unknown[] {
-    const result: unknown[] = [];
-    const valueRegex = /<value>([\s\S]*?)<\/value>/g;
-    let match;
-
-    while ((match = valueRegex.exec(dataContent)) !== null) {
-      result.push(this.parseXmlValue(match[1]));
-    }
-
-    return result;
+    const values = this.extractBalancedElements(dataContent, 'value');
+    return values.map(v => this.parseXmlValue(v));
   }
 
   /**
@@ -272,12 +318,17 @@ export class WordPressXmlRpcService {
    */
   private parseXmlStruct(structContent: string): Record<string, unknown> {
     const result: Record<string, unknown> = {};
-    const memberRegex = /<member>\s*<name>([^<]+)<\/name>\s*<value>([\s\S]*?)<\/value>\s*<\/member>/g;
-    let match;
+    const members = this.extractBalancedElements(structContent, 'member');
 
-    while ((match = memberRegex.exec(structContent)) !== null) {
-      const name = this.unescapeXml(match[1]);
-      result[name] = this.parseXmlValue(match[2]);
+    for (const member of members) {
+      const nameMatch = member.match(/<name>([^<]+)<\/name>/);
+      if (!nameMatch) continue;
+
+      const name = this.unescapeXml(nameMatch[1]);
+      const values = this.extractBalancedElements(member, 'value');
+      if (values.length > 0) {
+        result[name] = this.parseXmlValue(values[0]);
+      }
     }
 
     return result;
@@ -420,6 +471,56 @@ export class WordPressXmlRpcService {
       return response.data;
     } catch (error) {
       console.error('Error fetching post:', this.sanitizeError(error));
+      throw error;
+    }
+  }
+
+  /**
+   * Get multiple posts via XML-RPC
+   */
+  async getPosts(options: { number?: number; offset?: number; status?: string } = {}): Promise<WordPressSyncedPost[]> {
+    try {
+      const filter: Record<string, unknown> = {
+        number: options.number || 100,
+        offset: options.offset || 0
+      };
+
+      if (options.status) {
+        filter.post_status = options.status;
+      }
+
+      const xmlRequest = this.buildXmlRpcRequest('wp.getPosts', [
+        this.blogId,
+        this.username,
+        this.password,
+        filter
+      ]);
+
+      const response = await axios.post(this.xmlrpcUrl, xmlRequest, {
+        headers: {
+          'Content-Type': 'application/xml'
+        }
+      });
+
+      const result = this.parseXmlRpcResponse(response.data);
+
+      if (!Array.isArray(result)) {
+        return [];
+      }
+
+      return result.map((post: Record<string, unknown>) => ({
+        id: Number(post.post_id),
+        title: String(post.post_title || ''),
+        content: String(post.post_content || ''),
+        excerpt: String(post.post_excerpt || ''),
+        status: String(post.post_status || 'draft'),
+        date: String(post.post_date || ''),
+        modified: String(post.post_modified || ''),
+        link: String(post.link || ''),
+        slug: String(post.post_name || '')
+      }));
+    } catch (error) {
+      console.error('Error fetching posts:', this.sanitizeError(error));
       throw error;
     }
   }

@@ -35,8 +35,26 @@ interface DashboardData {
   allPins: SavedPin[]
 }
 
+interface WordPressPost {
+  id: number
+  title: string
+  status: string
+  slug: string
+  date: string
+}
+
+interface WordPressSyncData {
+  posts: WordPressPost[]
+  count: number
+  published: number
+  drafts: number
+  syncedAt: string
+  synced: boolean
+}
+
 export default function Dashboard() {
   const [data, setData] = useState<DashboardData | null>(null)
+  const [wpData, setWpData] = useState<WordPressSyncData | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -48,8 +66,15 @@ export default function Dashboard() {
     try {
       setLoading(true)
       setError(null)
-      const result = await getDashboard()
-      setData(result)
+
+      // Load both dashboard data and WordPress posts in parallel
+      const [dashResult, wpResult] = await Promise.all([
+        getDashboard(),
+        fetch('http://localhost:5000/api/wordpress/posts').then(r => r.json()).catch(() => null)
+      ])
+
+      setData(dashResult)
+      setWpData(wpResult)
     } catch (err) {
       setError(getErrorMessage(err))
     } finally {
@@ -93,13 +118,7 @@ export default function Dashboard() {
 
   if (!data) return null
 
-  const stats = [
-    { label: 'Total Pins', value: data.stats.pins.total, color: 'bg-purple-100 text-purple-700' },
-    { label: 'Draft Pins', value: data.stats.pins.draft, color: 'bg-yellow-100 text-yellow-700' },
-    { label: 'Approved Pins', value: data.stats.pins.approved, color: 'bg-blue-100 text-blue-700' },
-    { label: 'Published Pins', value: data.stats.pins.published, color: 'bg-green-100 text-green-700' },
-    { label: 'Images Generated', value: data.stats.images.total, color: 'bg-pink-100 text-pink-700' },
-  ]
+  const wordpressUrl = 'https://parentvillage.blog'
 
   return (
     <div>
@@ -110,28 +129,123 @@ export default function Dashboard() {
         </button>
       </div>
 
-      {/* Stats Grid */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-8">
-        {stats.map((stat, idx) => (
-          <div key={idx} className="card">
-            <div className={`text-3xl font-bold mb-2 ${stat.color} inline-block px-3 py-1 rounded-lg`}>
-              {stat.value}
+      {/* WordPress Stats */}
+      {wpData?.synced && (
+        <div className="mb-8">
+          <h2 className="text-lg font-semibold text-gray-700 mb-3">WordPress Posts</h2>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div className="card">
+              <div className="text-3xl font-bold text-blue-700 mb-2">{wpData.count}</div>
+              <p className="text-gray-600 text-sm">Total Posts</p>
             </div>
-            <p className="text-gray-600 text-sm">{stat.label}</p>
+            <div className="card">
+              <div className="text-3xl font-bold text-green-700 mb-2">{wpData.published}</div>
+              <p className="text-gray-600 text-sm">Published</p>
+            </div>
+            <div className="card">
+              <div className="text-3xl font-bold text-yellow-700 mb-2">{wpData.drafts}</div>
+              <p className="text-gray-600 text-sm">Drafts</p>
+            </div>
+            <div className="card">
+              <div className="text-sm text-gray-500">Last Synced</div>
+              <div className="text-base font-semibold text-gray-700 mt-1">
+                {formatTimeAgo(wpData.syncedAt)}
+              </div>
+            </div>
           </div>
-        ))}
+        </div>
+      )}
+
+      {/* Pin Stats */}
+      <div className="mb-8">
+        <h2 className="text-lg font-semibold text-gray-700 mb-3">Pinterest Pins</h2>
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+          <div className="card">
+            <div className="text-3xl font-bold bg-purple-100 text-purple-700 inline-block px-3 py-1 rounded-lg mb-2">
+              {data.stats.pins.total}
+            </div>
+            <p className="text-gray-600 text-sm">Total Pins</p>
+          </div>
+          <div className="card">
+            <div className="text-3xl font-bold bg-yellow-100 text-yellow-700 inline-block px-3 py-1 rounded-lg mb-2">
+              {data.stats.pins.draft}
+            </div>
+            <p className="text-gray-600 text-sm">Draft Pins</p>
+          </div>
+          <div className="card">
+            <div className="text-3xl font-bold bg-blue-100 text-blue-700 inline-block px-3 py-1 rounded-lg mb-2">
+              {data.stats.pins.approved}
+            </div>
+            <p className="text-gray-600 text-sm">Approved</p>
+          </div>
+          <div className="card">
+            <div className="text-3xl font-bold bg-green-100 text-green-700 inline-block px-3 py-1 rounded-lg mb-2">
+              {data.stats.pins.published}
+            </div>
+            <p className="text-gray-600 text-sm">Published</p>
+          </div>
+          <div className="card">
+            <div className="text-3xl font-bold bg-pink-100 text-pink-700 inline-block px-3 py-1 rounded-lg mb-2">
+              {data.stats.images.total}
+            </div>
+            <p className="text-gray-600 text-sm">Images</p>
+          </div>
+        </div>
       </div>
 
-      {/* Recent Activity */}
+      {/* Main Content Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        {/* Recent WordPress Posts */}
         <div className="lg:col-span-2">
+          {wpData?.synced && wpData.posts.length > 0 && (
+            <div className="card mb-6">
+              <div className="flex justify-between items-center mb-4">
+                <h2 className="text-xl font-bold">Recent WordPress Posts</h2>
+                <Link to="/library" className="text-sm text-blue-600 hover:text-blue-800">
+                  View all →
+                </Link>
+              </div>
+              <div className="space-y-2">
+                {wpData.posts.slice(0, 5).map((post) => {
+                  const linkUrl = post.status === 'draft'
+                    ? `${wordpressUrl}/wp-admin/post.php?post=${post.id}&action=edit`
+                    : `${wordpressUrl}/?p=${post.id}`
+
+                  return (
+                    <a
+                      key={post.id}
+                      href={linkUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center justify-between p-3 border border-gray-100 rounded-lg hover:bg-gray-50 hover:border-gray-200 transition-colors"
+                    >
+                      <div className="flex-1 min-w-0">
+                        <p className="font-medium text-gray-900 truncate">
+                          {post.title || '(Untitled)'}
+                        </p>
+                      </div>
+                      <span className={`ml-3 px-2 py-0.5 rounded text-xs flex-shrink-0 ${
+                        post.status === 'publish'
+                          ? 'bg-green-100 text-green-700'
+                          : 'bg-yellow-100 text-yellow-700'
+                      }`}>
+                        {post.status}
+                      </span>
+                    </a>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Recent Pin Activity */}
           <div className="card">
-            <h2 className="text-xl font-bold mb-4">Recent Activity</h2>
+            <h2 className="text-xl font-bold mb-4">Recent Pin Activity</h2>
             {data.allPins.length === 0 ? (
-              <p className="text-gray-500">No recent activity. Generate your first article!</p>
+              <p className="text-gray-500">No pin activity yet. Generate your first article!</p>
             ) : (
               <div className="space-y-3">
-                {data.allPins.slice(0, 8).map((pin) => {
+                {data.allPins.slice(0, 5).map((pin) => {
                   const imageUrl = pin.variations[0]?.imageUrl
                   return (
                     <Link
@@ -140,7 +254,7 @@ export default function Dashboard() {
                       className="flex items-center gap-4 p-3 border border-gray-100 rounded-lg hover:bg-gray-50 hover:border-gray-200 transition-colors cursor-pointer"
                     >
                       {/* Thumbnail */}
-                      <div className="w-16 h-16 flex-shrink-0 rounded-lg overflow-hidden bg-gray-100">
+                      <div className="w-12 h-12 flex-shrink-0 rounded-lg overflow-hidden bg-gray-100">
                         {imageUrl ? (
                           <img
                             src={imageUrl}
@@ -151,7 +265,7 @@ export default function Dashboard() {
                             }}
                           />
                         ) : (
-                          <div className="w-full h-full flex items-center justify-center text-2xl text-gray-400">
+                          <div className="w-full h-full flex items-center justify-center text-xl text-gray-400">
                             📌
                           </div>
                         )}
@@ -174,13 +288,6 @@ export default function Dashboard() {
                           <span>{formatTimeAgo(pin.createdAt)}</span>
                         </div>
                       </div>
-
-                      {/* Arrow */}
-                      <div className="text-gray-400 flex-shrink-0">
-                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                        </svg>
-                      </div>
                     </Link>
                   )
                 })}
@@ -193,10 +300,24 @@ export default function Dashboard() {
         <div className="card h-fit">
           <h2 className="text-xl font-bold mb-4">Quick Actions</h2>
           <div className="space-y-2">
-            <a href="/generate" className="btn-primary w-full text-center block">Generate Article</a>
-            <a href="/pins" className="btn-secondary w-full text-center block">Manage Pins</a>
-            <a href="/library" className="btn-secondary w-full text-center block">View Library</a>
+            <Link to="/generate" className="btn-primary w-full text-center block">
+              Generate Article
+            </Link>
+            <Link to="/pins" className="btn-secondary w-full text-center block">
+              Manage Pins
+            </Link>
+            <Link to="/library" className="btn-secondary w-full text-center block">
+              View Library
+            </Link>
           </div>
+
+          {!wpData?.synced && (
+            <div className="mt-6 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
+              <p className="text-sm text-yellow-700">
+                Run <code className="bg-yellow-100 px-1 rounded">npm run sync-wordpress</code> to sync posts from WordPress.
+              </p>
+            </div>
+          )}
         </div>
       </div>
     </div>

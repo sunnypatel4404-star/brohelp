@@ -21,7 +21,8 @@
     "publish-draft": "ts-node src/backend/commands/publishDraft.ts",
     "dashboard": "ts-node src/backend/commands/dashboard.ts",
     "server": "ts-node src/backend/commands/server.ts",
-    "migrate-db": "ts-node src/backend/database/migrate.ts"
+    "migrate-db": "ts-node src/backend/database/migrate.ts",
+    "sync-wordpress": "ts-node src/backend/commands/syncWordpress.ts"
   },
   "keywords": [
     "wordpress",
