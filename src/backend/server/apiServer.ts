@@ -23,7 +23,8 @@ interface JobStatus {
   result?: {
     articleTitle?: string
     postId?: number
-    imagePath?: string
+    imagePath?: string        // WordPress featured image path
+    pinImagePath?: string     // Pinterest pin image path
     pinsGenerated?: number
   }
   error?: string
@@ -370,16 +371,35 @@ async function generateArticleBackground(
       result
     })
 
-    // Step 2: Generate image if requested
-    let imagePath: string | null = null
+    // Step 2: Generate images if requested
+    let wpImagePath: string | null = null
+    let pinImagePath: string | null = null
+    let pinImageUrl: string | null = null
     if (generateImage) {
       updateJob(jobId, { steps: { ...getJob(jobId)!.steps, image: 'processing' } })
-      console.log(`[Job ${jobId}] Generating featured image...`)
+      console.log(`[Job ${jobId}] Generating WordPress featured image...`)
 
       try {
-        const imageResult = await imageGenerator.generateArticleImage({ topic })
-        imagePath = imageResult.localPath
-        result.imagePath = imagePath
+        // Generate WordPress featured image (square)
+        const wpImageResult = await imageGenerator.generateArticleImage({
+          topic,
+          articleTitle: articleContent.title,
+          imageType: 'wordpress'
+        })
+        wpImagePath = wpImageResult.localPath
+        result.imagePath = wpImagePath
+
+        // Generate Pinterest pin image (vertical)
+        console.log(`[Job ${jobId}] Generating Pinterest pin image...`)
+        const pinImageResult = await imageGenerator.generateArticleImage({
+          topic,
+          articleTitle: articleContent.title,
+          imageType: 'pinterest'
+        })
+        pinImagePath = pinImageResult.localPath
+        pinImageUrl = pinImageResult.url
+        result.pinImagePath = pinImagePath
+
         updateJob(jobId, {
           steps: { ...getJob(jobId)!.steps, image: 'completed' },
           result
@@ -433,16 +453,16 @@ async function generateArticleBackground(
         result.postId = postId
         updateJob(jobId, { result })
 
-        // Upload featured image and get the public URL
-        if (imagePath && postId) {
+        // Upload WordPress featured image and get the public URL
+        if (wpImagePath && postId) {
           try {
             const fileName = `featured-image-${Date.now()}.png`
-            const mediaResult = await wordpress.uploadMedia(imagePath, fileName, 'image/png')
+            const mediaResult = await wordpress.uploadMedia(wpImagePath, fileName, 'image/png')
             await wordpress.setFeaturedImage(postId, mediaResult.attachmentId)
             wordpressImageUrl = mediaResult.url
-            console.log(`[Job ${jobId}] Featured image uploaded and set`)
+            console.log(`[Job ${jobId}] WordPress featured image uploaded and set`)
             if (wordpressImageUrl) {
-              console.log(`[Job ${jobId}] Image URL: ${wordpressImageUrl}`)
+              console.log(`[Job ${jobId}] WordPress Image URL: ${wordpressImageUrl}`)
             }
           } catch (err) {
             console.error(`[Job ${jobId}] Failed to upload featured image:`, err instanceof Error ? err.message : err)
@@ -464,17 +484,17 @@ async function generateArticleBackground(
       console.log(`[Job ${jobId}] Generating Pinterest pins...`)
 
       try {
-        // Use WordPress media URL if available, otherwise warn about missing public URL
-        const pinImageUrl = wordpressImageUrl || undefined
-        if (!pinImageUrl && imagePath) {
-          console.warn(`[Job ${jobId}] Warning: No public image URL available for pins. Local path: ${imagePath}`)
+        // Use Pinterest pin image URL (vertical format optimized for Pinterest)
+        if (!pinImageUrl && pinImagePath) {
+          console.warn(`[Job ${jobId}] Warning: No Pinterest image URL available. Local path: ${pinImagePath}`)
         }
 
         const pinData = {
           title: articleContent.title,
           content: articleContent.content,
           postId: postId,
-          imageUrl: pinImageUrl,
+          imageUrl: pinImageUrl || undefined,
+          localImagePath: pinImagePath || undefined,
           link: postId ? `${process.env.WORDPRESS_URL}/?p=${postId}` : undefined
         }
 

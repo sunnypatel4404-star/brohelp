@@ -4,7 +4,7 @@
   "description": "Automated article generation and posting to WordPress using ChatGPT with React dashboard",
   "main": "dist/backend/index.js",
   "scripts": {
-    "dev:backend": "ts-node src/backend/index.ts",
+    "dev:backend": "ts-node src/backend/server/apiServer.ts",
     "dev:frontend": "vite",
     "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
     "build:backend": "tsc -p tsconfig.backend.json",

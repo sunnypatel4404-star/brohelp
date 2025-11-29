@@ -95,24 +95,35 @@ async function main() {
 
     console.log(`\n📄 Article generated successfully\n`);
 
-    // Generate on-brand illustration
-    console.log('🎨 Generating on-brand illustration...\n');
-    const image = await imageService.generateArticleImage({
+    // Generate WordPress featured image (square format)
+    console.log('🖼️  Generating WordPress featured image...\n');
+    const wpImage = await imageService.generateArticleImage({
       topic,
       articleTitle: article.title,
-      articleContent: article.content
+      articleContent: article.content,
+      imageType: 'wordpress'
     });
 
-    console.log(`📄 Generated article:\n`);
+    // Generate Pinterest pin image (vertical format)
+    console.log('📌 Generating Pinterest pin image...\n');
+    const pinImage = await imageService.generateArticleImage({
+      topic,
+      articleTitle: article.title,
+      articleContent: article.content,
+      imageType: 'pinterest'
+    });
+
+    console.log(`\n📄 Generated article:\n`);
     console.log(`Title: ${article.title}`);
     if (article.excerpt) {
       console.log(`Excerpt: ${article.excerpt}`);
     }
     console.log(`\nFirst 300 characters of content:\n${article.content.substring(0, 300)}...\n`);
 
-    console.log(`\n🖼️  Generated image:\n`);
-    console.log(`Image path: ${image.localPath}`);
-    console.log(`\n💡 Review the image to ensure it matches your brand\n`);
+    console.log(`\n🖼️  Generated images:\n`);
+    console.log(`WordPress image: ${wpImage.localPath}`);
+    console.log(`Pinterest image: ${pinImage.localPath}`);
+    console.log(`\n💡 Review the images to ensure they match your brand\n`);
 
     // Add watermark to article content
     const articleWithWatermark = article.content + `
@@ -153,14 +164,13 @@ async function main() {
     console.log(`✅ Article uploaded to WordPress as DRAFT!\n`);
     console.log(`Post ID: ${post.id}`);
 
-    // Upload and set featured image
-    console.log('\n🖼️  Uploading featured image...\n');
-    let wordpressImageUrl: string | undefined;
+    // Upload WordPress featured image
+    console.log('\n🖼️  Uploading WordPress featured image...\n');
     try {
-      const fileName = path.basename(image.localPath);
-      const mediaResult = await wordpress.uploadMedia(image.localPath, fileName);
+      const fileName = path.basename(wpImage.localPath);
+      const mediaResult = await wordpress.uploadMedia(wpImage.localPath, fileName);
       await wordpress.setFeaturedImage(post.id, mediaResult.attachmentId);
-      wordpressImageUrl = mediaResult.url;
+      console.log('✅ Featured image uploaded successfully\n');
     } catch (error) {
       console.warn('⚠️  Warning: Could not set featured image, but article was created successfully');
       console.warn(`Error: ${error instanceof Error ? error.message : error}\n`);
@@ -183,8 +193,9 @@ async function main() {
         excerpt: article.excerpt || '',
         postId: post.id,
         blogUrl: wordpressUrl,
-        // Use WordPress media URL if available, otherwise fall back to DALL-E URL
-        imageUrl: wordpressImageUrl || image.url
+        // Use the Pinterest pin image (vertical format optimized for Pinterest)
+        imageUrl: pinImage.url,
+        localImagePath: pinImage.localPath
       };
 
       const variations = pinService.generatePinVariations(pinArticleData);

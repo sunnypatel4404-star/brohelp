@@ -3,17 +3,20 @@ import * as fs from 'fs';
 import * as path from 'path';
 import sharp from 'sharp';
 import { getDatabase } from '../database/database';
+import { getImageConfig, ImageType } from '../config/imageConfig';
 
 interface ImageGenerationRequest {
   topic: string;
   articleContent?: string;
   articleTitle?: string;
+  imageType?: ImageType; // 'wordpress' or 'pinterest'
 }
 
 interface GeneratedImage {
   url: string;
   localPath: string;
   prompt: string;
+  imageType: ImageType;
 }
 
 export class ImageGenerationService {
@@ -32,23 +35,27 @@ export class ImageGenerationService {
 
   /**
    * Generate an on-brand illustration for an article
-   * Style: Flat design, vector illustrations with pastel + warm earth tones
+   * Style: ParentVillage Pastel Pinterest Style
+   * Supports separate configurations for WordPress and Pinterest images
    */
   async generateArticleImage(request: ImageGenerationRequest): Promise<GeneratedImage> {
-    const { topic, articleTitle } = request;
+    const { topic, articleTitle, imageType = 'wordpress' } = request;
 
-    const prompt = this.buildPrompt(topic, articleTitle);
+    // Get configuration based on image type
+    const config = getImageConfig(imageType);
+    const prompt = config.promptTemplate(topic, articleTitle);
 
     try {
-      console.log('🎨 Generating on-brand illustration...\n');
+      const typeName = imageType === 'pinterest' ? 'Pinterest pin' : 'WordPress featured image';
+      console.log(`🎨 Generating ${typeName} (${config.size})...\n`);
 
       const response = await this.client.images.generate({
         model: 'dall-e-3',
         prompt: prompt,
         n: 1,
-        size: '1024x1024', // DALL-E 3 generates 1024x1024, we'll note for Pinterest aspect ratio
-        quality: 'standard',
-        style: 'natural'
+        size: config.size,
+        quality: config.quality,
+        style: config.style
       });
 
       if (!response.data || !response.data[0] || !response.data[0].url) {
@@ -58,21 +65,26 @@ export class ImageGenerationService {
       const imageUrl = response.data[0].url;
 
       // Download and save image locally
-      let localPath = await this.downloadAndSaveImage(imageUrl, topic);
+      let localPath = await this.downloadAndSaveImage(imageUrl, topic, imageType);
 
-      // Add watermark to the image
-      console.log('💛 Adding watermark...\n');
-      localPath = await this.addWatermark(localPath);
+      // Add watermark to the image (only for WordPress images, Pinterest has it in the prompt)
+      if (imageType === 'wordpress') {
+        console.log('💛 Adding watermark...\n');
+        localPath = await this.addWatermark(localPath);
+      } else {
+        console.log('💛 Watermark included in Pinterest design...\n');
+      }
 
       // Save image metadata to database
       this.saveImageMetadata(localPath, topic, prompt);
 
-      console.log(`✓ Image generated and saved with watermark`);
+      console.log(`✓ ${typeName} generated and saved`);
 
       return {
         url: imageUrl,
         localPath: localPath,
-        prompt: prompt
+        prompt: prompt,
+        imageType: imageType
       };
     } catch (error) {
       console.error('Error generating image:', error);
@@ -80,56 +92,14 @@ export class ImageGenerationService {
     }
   }
 
-  /**
-   * Build detailed prompt for DALL-E based on Parent Village brand guidelines
-   */
-  private buildPrompt(topic: string, articleTitle?: string): string {
-    const titlePart = articleTitle ? `about "${articleTitle}"` : `about "${topic}"`;
-
-    return `Create a flat design illustration for a parenting blog article ${titlePart}.
-
-CRITICAL STYLE REQUIREMENTS:
-- Flat design, vector illustration style (NOT photorealistic)
-- Warm, inviting, child-friendly aesthetic
-- Color palette MUST include: Soft pastels (pastel pinks, soft blues, soft greens, soft yellows) combined with warm earth tones (beiges, warm browns, soft oranges)
-- Simple, minimalist composition with clean lines
-- Include happy, relatable people (parents, children) or relevant activity scenes
-- Characters should be diverse and inclusive
-- Perfect for Pinterest pins (1000x1500px aspect ratio - design for vertical orientation)
-- Accessible and welcoming to all parents
-
-WATERMARK REQUIREMENT (IMPORTANT):
-- Add text at the bottom center of the image: "Made With Love By Parentvillage.blog"
-- Use a soft, friendly sans-serif font
-- Place a yellow heart emoji (💛) next to the text
-- Use soft colors that blend with the pastel palette (soft beige or light brown for text)
-- Keep watermark subtle but visible
-
-DESIGN ELEMENTS:
-- Simple geometric shapes
-- Subtle shadows for depth
-- Friendly, rounded corners
-- Child-safe, age-appropriate imagery
-- Calming, peaceful atmosphere
-
-DO NOT include:
-- Photorealistic images or photographs
-- Overly complex designs or busy layouts
-- Bright primary colors (use pastels instead)
-- Professional/clinical appearance
-- Medical imagery or technical diagrams
-- Dark or scary elements
-- Cluttered backgrounds
-
-Make it suitable for a parenting and early childhood education audience. The illustration should be warm, professional yet approachable, and visually similar to modern parenting blog aesthetics.`;
-  }
 
   /**
    * Download image from URL and save to local directory
    */
   private async downloadAndSaveImage(
     imageUrl: string,
-    topic: string
+    topic: string,
+    imageType: ImageType = 'wordpress'
   ): Promise<string> {
     try {
       // Fetch the image
@@ -140,14 +110,15 @@ Make it suitable for a parenting and early childhood education audience. The ill
 
       const buffer = await response.arrayBuffer();
 
-      // Create filename from topic
+      // Create filename from topic with image type prefix
       const timestamp = Date.now();
       const sanitizedTopic = topic
         .toLowerCase()
         .replace(/[^a-z0-9]+/g, '-')
         .substring(0, 30);
 
-      const filename = `${sanitizedTopic}_${timestamp}.png`;
+      const typePrefix = imageType === 'pinterest' ? 'pin' : 'wp';
+      const filename = `${typePrefix}_${sanitizedTopic}_${timestamp}.png`;
       const localPath = path.join(this.imagesDirectory, filename);
 
       // Save image
