@@ -121,17 +121,16 @@ async function main() {
       console.log(`Next: npm run review-pins ${pinId} export`);
       console.log(`Then upload to Pinterest: https://www.pinterest.com/pin/create/bulk/\n`);
     } else if (action === 'export') {
-      // Export pins in Pinterest's new bulk upload format (V2)
-      // Only include the minimal required columns for organic pins
+      // Export pins in Pinterest's bulk upload CSV format (updated 10/15/25)
+      // For organic pins (not promoted/ads)
       const headers = [
-        'Campaign Name',
-        'Ad Group Name',
-        'Promoted Pin Name',
-        'Pin Title',
-        'Pin Description',
-        'Media File Name',
-        'Organic Pin URL',
-        'Image Alternative Text'
+        'Title',              // Required: Pin title (max 100 characters)
+        'Media URL',          // Required: Publicly available image URL
+        'Pinterest board',    // Required: Board name
+        'Description',        // Optional: max 500 characters
+        'Link',               // Optional: Destination URL
+        'Publish date',       // Optional: YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS
+        'Keywords'            // Optional: Comma-separated keywords
       ];
 
       // Format tags for appending to description (Pinterest best practice for discoverability)
@@ -146,22 +145,39 @@ async function main() {
 
       const tagsString = formatTags(pin.suggestedTags, 5);
       const rows: string[][] = [];
-      const campaignName = `${pin.articleTitle.substring(0, 50)}_Campaign`;
-      const adGroupName = `${pin.articleTitle.substring(0, 40)}_AdGroup`;
 
-      pin.variations.forEach((variation, index) => {
-        // Append tags to description for Pinterest discoverability
+      pin.variations.forEach((variation) => {
+        // Title: Max 100 characters
+        const title = variation.title.substring(0, 100);
+
+        // Media URL: Image URL (must be publicly available)
+        const mediaUrl = variation.imageUrl || '';
+
+        // Pinterest board: Board name (default if not specified)
+        const boardName = variation.boardName || 'Parenting Tips';
+
+        // Description: Include hashtags, max 500 characters
         const descriptionWithTags = (variation.description + tagsString).substring(0, 500);
 
+        // Link: Destination URL
+        const link = variation.link || '';
+
+        // Publish date: Empty for immediate publish
+        const publishDate = '';
+
+        // Keywords: Comma-separated tags without # symbols
+        const keywords = pin.suggestedTags
+          .map(tag => tag.replace(/^#/, ''))
+          .join(', ');
+
         rows.push([
-          campaignName,
-          adGroupName,
-          `Pin_${index + 1}_${variation.angle.replace(/\//g, '_')}`,
-          variation.title,
+          title,
+          mediaUrl,
+          boardName,
           descriptionWithTags,
-          variation.imageUrl || '', // Pinterest prefers image URLs in the bulk format
-          variation.link,
-          variation.altText
+          link,
+          publishDate,
+          keywords
         ]);
       });
 
@@ -181,15 +197,15 @@ async function main() {
       const exportPath = path.join(exportDir, `${pinId}_${timestamp}.csv`);
       fs.writeFileSync(exportPath, csv);
 
-      console.log(`\n✅ Pins exported to Pinterest format!\n`);
+      console.log(`\n✅ Pins exported to Pinterest CSV format!\n`);
       console.log(`📁 File: ${exportPath}\n`);
       console.log(`📋 PIN UPLOAD INSTRUCTIONS:`);
-      console.log(`1. Go to Pinterest Ads Manager:`);
-      console.log(`   https://ads.pinterest.com/`);
-      console.log(`2. Click "Create" → "Bulk upload"`);
-      console.log(`3. Click "Upload a file" and select: ${exportPath}`);
-      console.log(`4. Review the pins in the preview`);
-      console.log(`5. Click "Publish" to upload all ${pin.variations.length} pins\n`);
+      console.log(`1. Go to Pinterest bulk upload page:`);
+      console.log(`   https://www.pinterest.com/pin/create/bulk/`);
+      console.log(`2. Click "Choose file" and select: ${exportPath}`);
+      console.log(`3. Review the ${pin.variations.length} pins in the preview`);
+      console.log(`4. Select the Pinterest board for each pin (or use default)`);
+      console.log(`5. Click "Publish" to upload all pins\n`);
       console.log(`📊 CSV Preview (first pin):`);
       console.log(headers.join(' | '));
       if (rows.length > 0) {

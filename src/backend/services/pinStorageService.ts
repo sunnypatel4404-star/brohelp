@@ -184,7 +184,10 @@ export class PinStorageService {
   }
 
   /**
-   * Export pins to CSV for manual upload
+   * Export pins to CSV for Pinterest bulk upload
+   * Format updated to match Pinterest template (10/15/25)
+   * Required fields: Title, Media URL, Pinterest board
+   * Optional fields: Description, Link, Publish date, Keywords
    */
   exportPinsToCsv(status?: 'draft' | 'approved' | 'published'): string {
     let pins = this.listPinDrafts();
@@ -193,37 +196,53 @@ export class PinStorageService {
       pins = pins.filter(pin => pin.status === status);
     }
 
+    // Pinterest CSV template headers (updated 10/15/25)
     const headers = [
-      'Article Title',
-      'Pin Title',
-      'Description',
-      'Link',
-      'Alt Text',
-      'Board Name',
-      'Angle',
-      'Suggested Tags',
-      'Status'
+      'Title',              // Required: Pin title (max 100 characters)
+      'Media URL',          // Required: Publicly available image URL
+      'Pinterest board',    // Required: Board name
+      'Description',        // Optional: max 500 characters
+      'Link',               // Optional: Destination URL
+      'Publish date',       // Optional: YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS
+      'Keywords'            // Optional: Comma-separated keywords
     ];
 
     const rows = [];
     for (const pin of pins) {
-      // Format tags for appending to description (Pinterest best practice)
-      const tagsForDescription = this.formatTagsForDescription(pin.suggestedTags, 5);
-
       for (const variation of pin.variations) {
-        // Append tags to description for Pinterest discoverability
+        // Title: Max 100 characters
+        const title = variation.title.substring(0, 100);
+
+        // Media URL: Image URL (must be publicly available)
+        const mediaUrl = variation.imageUrl || '';
+
+        // Pinterest board: Board name
+        const boardName = variation.boardName || 'Parenting Tips';
+
+        // Description: Include hashtags, max 500 characters
+        const tagsForDescription = this.formatTagsForDescription(pin.suggestedTags, 5);
         const descriptionWithTags = variation.description + tagsForDescription;
+        const description = descriptionWithTags.substring(0, 500);
+
+        // Link: Destination URL
+        const link = variation.link || '';
+
+        // Publish date: Empty for immediate publish, or YYYY-MM-DD for scheduling
+        const publishDate = '';
+
+        // Keywords: Comma-separated tags (no # symbols for this field)
+        const keywords = pin.suggestedTags
+          .map(tag => tag.replace(/^#/, ''))
+          .join(', ');
 
         rows.push([
-          pin.articleTitle,
-          variation.title,
-          descriptionWithTags.substring(0, 500), // Pinterest max description length
-          variation.link,
-          variation.altText,
-          variation.boardName || '',
-          variation.angle,
-          pin.suggestedTags.join(', '),
-          pin.status
+          title,
+          mediaUrl,
+          boardName,
+          description,
+          link,
+          publishDate,
+          keywords
         ]);
       }
     }
