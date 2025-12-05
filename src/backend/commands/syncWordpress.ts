@@ -1,7 +1,7 @@
 import dotenv from 'dotenv';
 import * as fs from 'fs';
 import * as path from 'path';
-import { WordPressXmlRpcService, WordPressSyncedPost } from '../services/wordpressXmlrpcService';
+import { WordPressXmlRpcService } from '../services/wordpressXmlrpcService';
 
 dotenv.config();
 

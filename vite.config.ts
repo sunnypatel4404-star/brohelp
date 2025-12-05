@@ -16,4 +16,11 @@ export default defineConfig({
       '@': path.resolve(__dirname, './src/frontend'),
     },
   },
+  server: {
+    port: 5173,
+    strictPort: true,
+    hmr: {
+      port: 5173,
+    },
+  },
 })

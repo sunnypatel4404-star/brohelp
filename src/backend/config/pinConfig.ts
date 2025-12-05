@@ -11,6 +11,8 @@ export interface PinVariation {
   keywords: string[];
 }
 
+// Reduced to 2 high-performing pin variations per article
+// (Pinterest best practices: How-To and Listicle formats perform best)
 export const pinVariations: PinVariation[] = [
   {
     name: 'How-To Pin',
@@ -27,30 +29,6 @@ export const pinVariations: PinVariation[] = [
       '{number} simple ways to {action} for your {age_group}. These practical tips help with {detail}. Which one will you try first? {cta}',
     angle: 'Listicle/Multiple solutions',
     keywords: ['tips', 'ways', 'ideas', 'simple']
-  },
-  {
-    name: 'Expert Insight Pin',
-    titleTemplate: 'Why {topic} Matters for {age_group}',
-    descriptionTemplate:
-      'Research shows that {detail}. Learn why {topic} is important for your {age_group} and how to support {action}. Evidence-based parenting at its best! {cta}',
-    angle: 'Educational/Research-backed',
-    keywords: ['research', 'expert', 'why', 'important']
-  },
-  {
-    name: 'Question Hook Pin',
-    titleTemplate: 'Is Your {age_group} {problem}?',
-    descriptionTemplate:
-      "If your {age_group} is {problem}, you're not alone! This guide helps with {detail} and offers practical solutions. Read on for {benefit}. {cta}",
-    angle: 'Relatable/Problem-solution',
-    keywords: ['problem', 'solution', 'help', 'struggling']
-  },
-  {
-    name: 'Evergreen Reference Pin',
-    titleTemplate: 'The Complete {age_group} {topic} Guide',
-    descriptionTemplate:
-      'Everything parents need to know about {topic} for {age_group}. From {detail} to advanced tips, this comprehensive guide covers it all. Save this for later! {cta}',
-    angle: 'Comprehensive/Reference',
-    keywords: ['guide', 'complete', 'everything', 'reference']
   }
 ];
 

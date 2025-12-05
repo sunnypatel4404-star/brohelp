@@ -140,7 +140,7 @@ async function main() {
           .slice(0, maxTags)
           .map(tag => tag.trim().startsWith('#') ? tag.trim() : `#${tag.trim()}`)
           .filter(tag => tag.length > 1);
-        return formattedTags.length > 0 ? '\n\n' + formattedTags.join(' ') : '';
+        return formattedTags.length > 0 ? ' ' + formattedTags.join(' ') : '';
       };
 
       const tagsString = formatTags(pin.suggestedTags, 5);
@@ -157,7 +157,13 @@ async function main() {
         const boardName = variation.boardName || 'Parenting Tips';
 
         // Description: Include hashtags, max 500 characters
-        const descriptionWithTags = (variation.description + tagsString).substring(0, 500);
+        // Remove newlines to prevent CSV formatting issues
+        const descriptionWithTags = (variation.description + tagsString)
+          .replace(/\n/g, ' ')  // Replace newlines with spaces
+          .replace(/\r/g, ' ')  // Replace carriage returns
+          .replace(/\s+/g, ' ')  // Normalize multiple spaces
+          .trim()
+          .substring(0, 500);
 
         // Link: Destination URL
         const link = variation.link || '';

@@ -37,7 +37,7 @@ export class PinGenerationService {
         benefit,
         action,
         detail,
-        ageGroup,
+        age_group: ageGroup,
         topic,
         number,
         problem
@@ -50,7 +50,7 @@ export class PinGenerationService {
           benefit,
           action,
           detail,
-          ageGroup,
+          age_group: ageGroup,
           topic,
           number,
           problem,
@@ -81,72 +81,116 @@ export class PinGenerationService {
    * Extract main benefit from title or content
    */
   private extractBenefit(title: string): string {
-    // Clean emoji and extra characters
-    const clean = title.replace(/[^\w\s-]/g, '').trim();
+    // Clean emoji, HTML, and extra characters
+    const clean = this.stripHtml(title).replace(/[^\w\s-]/g, '').trim();
 
     // Look for common benefit patterns
     const patterns = [
-      /how to (.+?) (?:for|in|with|through)/i,
-      /(.+?) (?:tips|guide|strategies|help)/i,
-      /help(?:ing)? (?:your )?\w+ (.+)/i,
-      /^(.+?) (?:through|with|for)/i
+      /(?:how to|guide to|tips for)\s+(.+?)(?:\s+for|\s+in|\s+with|\s+through|$)/i,
+      /(.+?)\s+(?:tips|guide|strategies|help|advice)(?:\s|$)/i,
+      /help(?:ing)?\s+(?:your\s+)?(?:child|toddler|kids?|baby|infant)\s+(.+?)(?:\s+for|\s+in|\s+with|$)/i,
+      /^(.+?)\s+(?:through|with|for|and)(?:\s|$)/i
     ];
 
     for (const pattern of patterns) {
       const match = clean.match(pattern);
-      if (match && match[1].trim().length > 2) {
+      if (match && match[1] && match[1].trim().length > 3) {
         return match[1].toLowerCase().trim();
       }
     }
 
-    // Fallback: extract first 3-5 meaningful words
-    const words = clean.split(' ')
-      .filter(w => w.length > 2)
-      .slice(0, 5)
+    // Fallback: extract meaningful words from title
+    const words = clean
+      .split(' ')
+      .filter(w => w.length > 2 && !this.isStopWord(w))
+      .slice(0, 4)
       .join(' ')
       .toLowerCase();
-    return words || 'parenting success';
+    return words || title.toLowerCase();
+  }
+
+  /**
+   * Check if word is a stop word
+   */
+  private isStopWord(word: string): boolean {
+    const stopWords = ['the', 'and', 'for', 'with', 'your', 'how', 'tips', 'guide', 'creating', 'building'];
+    return stopWords.includes(word.toLowerCase());
+  }
+
+  /**
+   * Strip HTML tags from text
+   */
+  private stripHtml(text: string): string {
+    return text
+      .replace(/<[^>]*>/g, ' ')  // Remove HTML tags
+      .replace(/&nbsp;/g, ' ')   // Replace &nbsp; with space
+      .replace(/&amp;/g, '&')    // Decode common entities
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/\s+/g, ' ')      // Normalize whitespace
+      .trim();
   }
 
   /**
    * Extract action from article content
    */
   private extractAction(title: string): string {
-    // Common action verbs in parenting content
+    const clean = this.stripHtml(title).toLowerCase();
+
+    // Common action verb patterns with context
     const actionPatterns = [
-      /balance|manage|navigate|set|establish|create/i,
-      /encourage|foster|build|develop|support|help|teach|guide/i
+      /(?:how to|tips for|guide to)\s+(\w+(?:\s+\w+){0,2})/i,
+      /(balanc(?:e|ing)|manag(?:e|ing)|navigat(?:e|ing)|establish(?:ing)?|creat(?:e|ing)|build(?:ing)?|develop(?:ing)?|support(?:ing)?|help(?:ing)?|teach(?:ing)?|guid(?:e|ing))\s+\w+/i
     ];
 
     for (const pattern of actionPatterns) {
-      if (pattern.test(title)) {
-        const match = title.match(pattern);
-        if (match) return match[0].toLowerCase();
+      const match = clean.match(pattern);
+      if (match && match[1]) {
+        return match[1].trim();
       }
     }
 
-    return 'balance screen time';
+    // Fallback: use the benefit as action context
+    const benefit = this.extractBenefit(title);
+    return benefit || title.substring(0, 30);
   }
 
   /**
    * Extract specific detail from excerpt or content
    */
   private extractDetail(text: string): string {
-    // Take first meaningful phrase
-    const sentences = text.split('.');
-    const firstSentence = sentences[0]?.trim() || '';
+    // Strip HTML tags first
+    const cleanedText = this.stripHtml(text);
 
-    // Clean emoji and special characters
-    const clean = firstSentence.replace(/[^\w\s-]/g, '').trim();
+    // Split into sentences and find the first meaningful one
+    const sentences = cleanedText
+      .split(/[.!?]+/)
+      .map(s => s.trim())
+      .filter(s => s.length > 20); // Filter out very short sentences
 
-    // Extract key phrase (take meaningful words, max 10)
-    const words = clean
+    if (sentences.length === 0) {
+      return cleanedText.substring(0, 80);
+    }
+
+    // Take first sentence and clean it
+    let firstSentence = sentences[0];
+
+    // Remove common prefixes
+    firstSentence = firstSentence
+      .replace(/^(introduction|overview|learn|discover|find out):\s*/i, '')
+      .trim();
+
+    // Extract key phrase (meaningful words, max 12 words or 80 chars)
+    const words = firstSentence
       .split(' ')
-      .filter(w => w.length > 2)
-      .slice(0, 10)
-      .join(' ')
-      .toLowerCase();
-    return words.substring(0, 60) || 'child development tips';
+      .filter(w => w.length > 1)
+      .slice(0, 12)
+      .join(' ');
+
+    const result = words.substring(0, 80);
+    return result || firstSentence.substring(0, 80);
   }
 
   /**
@@ -172,17 +216,17 @@ export class PinGenerationService {
    * Extract main topic from title
    */
   private extractTopic(title: string): string {
-    // Remove emoji and common words
-    const cleaned = title
-      .replace(/[^\w\s-]/g, '')
-      .replace(/(how to|tips|guide|for|in|the|a|an)/gi, '')
+    // Strip HTML and remove emoji
+    const cleaned = this.stripHtml(title)
+      .replace(/[^\w\s-]/g, ' ')
+      .replace(/(how to|tips for|guide to|for|in|the|a|an|creating|building)\s+/gi, '')
       .trim()
-      .split(' ')
-      .filter(w => w.length > 2)
+      .split(/\s+/)
+      .filter(w => w.length > 2 && !this.isStopWord(w))
       .slice(0, 4)
       .join(' ');
 
-    return cleaned.trim() || 'Parenting';
+    return cleaned.trim() || this.stripHtml(title).substring(0, 30) || 'Parenting';
   }
 
   /**
@@ -197,25 +241,36 @@ export class PinGenerationService {
    * Extract problem statement from title
    */
   private extractProblem(title: string): string {
-    const titleLower = title.toLowerCase();
+    const titleLower = this.stripHtml(title).toLowerCase();
 
     // Look for problem indicators with better matching
-    if (titleLower.includes('screen time') || titleLower.includes('screen'))
-      return 'spending too much time on screens';
-    if (titleLower.includes('struggling'))
-      return 'struggling with bedtime';
-    if (titleLower.includes('difficult') || titleLower.includes('challenging'))
-      return 'dealing with tantrums';
-    if (titleLower.includes('sleep') || titleLower.includes('bedtime'))
-      return 'resistant to bedtime';
-    if (titleLower.includes('picky') || titleLower.includes('eating'))
-      return 'a picky eater';
-    if (titleLower.includes('parent') && titleLower.includes('newborn'))
-      return 'adjusting to parenthood';
-    if (titleLower.includes('sibling'))
-      return 'managing sibling rivalry';
+    const problemMap: { [key: string]: string } = {
+      'screen time': 'spending too much time on screens',
+      'screen': 'having screen time challenges',
+      'struggling': 'struggling with routines',
+      'difficult': 'dealing with challenging behaviors',
+      'challenging': 'facing daily challenges',
+      'sleep': 'having sleep difficulties',
+      'bedtime': 'resistant to bedtime',
+      'picky eat': 'a picky eater',
+      'eating': 'having mealtime struggles',
+      'tantrum': 'dealing with tantrums',
+      'behavior': 'showing challenging behaviors',
+      'sibling': 'managing sibling rivalry',
+      'potty': 'potty training',
+      'warm': 'struggling to stay warm',
+      'cold': 'dealing with cold weather'
+    };
 
-    return 'feeling overwhelmed as a parent';
+    for (const [keyword, problem] of Object.entries(problemMap)) {
+      if (titleLower.includes(keyword)) {
+        return problem;
+      }
+    }
+
+    // Fallback: use a generic but relevant problem based on title
+    const topic = this.extractTopic(title);
+    return `navigating ${topic}`;
   }
 
   /**

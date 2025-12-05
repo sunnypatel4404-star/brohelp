@@ -1,6 +1,7 @@
 import dotenv from 'dotenv';
 import { PinGenerationService } from '../services/pinGenerationService';
 import { PinStorageService } from '../services/pinStorageService';
+import { WordPressXmlRpcService } from '../services/wordpressXmlrpcService';
 
 dotenv.config();
 
@@ -23,15 +24,71 @@ async function main() {
     const pinService = new PinGenerationService();
     const storageService = new PinStorageService();
 
-    // Simulated article data (in real scenario, this would come from WordPress)
-    const articleData = {
-      title: topic,
-      content: `Article about ${topic}. This would contain the full article content that was generated with ChatGPT.`,
-      excerpt: `Learn practical tips about ${topic} for parents and caregivers.`,
-      postId: postId,
-      blogUrl: process.env.WORDPRESS_URL || 'https://parentvillage.blog',
-      imageUrl: undefined // Would be populated from featured image
-    };
+    let articleData;
+
+    // If post ID is provided, fetch the actual article from WordPress
+    if (postId) {
+      console.log(`📥 Fetching article from WordPress (Post ID: ${postId})...\n`);
+
+      const wordpressUrl = process.env.WORDPRESS_URL;
+      const wordpressUsername = process.env.WORDPRESS_USERNAME;
+      const wordpressPassword = process.env.WORDPRESS_PASSWORD;
+
+      if (!wordpressUrl || !wordpressUsername || !wordpressPassword) {
+        console.error('❌ Missing WordPress credentials in .env');
+        console.error('Using simulated data instead...\n');
+
+        articleData = {
+          title: topic,
+          content: `This is simulated content for "${topic}". For better pin quality, please configure WordPress credentials to fetch actual article content.`,
+          excerpt: `Learn practical tips about ${topic} for parents and caregivers.`,
+          postId: postId,
+          blogUrl: process.env.WORDPRESS_URL || 'https://parentvillage.blog',
+          imageUrl: undefined
+        };
+      } else {
+        const wordpress = new WordPressXmlRpcService(wordpressUrl, wordpressUsername, wordpressPassword);
+
+        try {
+          const postResponse = await wordpress.getPost(postId);
+          const post = postResponse as { title: string; content: string; excerpt?: string };
+
+          articleData = {
+            title: post.title,
+            content: post.content,
+            excerpt: post.excerpt || post.content.substring(0, 300),
+            postId: postId,
+            blogUrl: wordpressUrl,
+            imageUrl: undefined // Could fetch featured image URL here
+          };
+
+          console.log(`✓ Fetched article: "${post.title}"\n`);
+        } catch (error) {
+          console.error('⚠️  Could not fetch article from WordPress');
+          console.error(`Error: ${error instanceof Error ? error.message : error}`);
+          console.error('Using simulated data instead...\n');
+
+          articleData = {
+            title: topic,
+            content: `This is simulated content for "${topic}". Could not fetch actual article from WordPress.`,
+            excerpt: `Learn practical tips about ${topic} for parents and caregivers.`,
+            postId: postId,
+            blogUrl: process.env.WORDPRESS_URL || 'https://parentvillage.blog',
+            imageUrl: undefined
+          };
+        }
+      }
+    } else {
+      // No post ID - use simulated data
+      articleData = {
+        title: topic,
+        content: `This is a comprehensive guide about ${topic} for parents and caregivers. The article covers practical strategies, expert tips, and real-world solutions to help families navigate this important aspect of parenting.`,
+        excerpt: `Discover practical tips and expert advice about ${topic}. Learn strategies that work for real families.`,
+        postId: postId,
+        blogUrl: process.env.WORDPRESS_URL || 'https://parentvillage.blog',
+        imageUrl: undefined
+      };
+    }
 
     console.log(`📝 Topic: ${topic}`);
     if (postId) {

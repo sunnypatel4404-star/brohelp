@@ -2,36 +2,278 @@
 @tailwind components;
 @tailwind utilities;
 
+@layer base {
+  body {
+    @apply bg-cream-100 text-brand-900 antialiased;
+    font-family: 'Avenir', 'Avenir Next', 'Segoe UI', system-ui, sans-serif;
+  }
+
+  h1, h2, h3, h4 {
+    font-family: 'Georgia', 'Cambria', 'Times New Roman', serif;
+  }
+}
+
 @layer components {
+  /* Buttons */
   .btn-primary {
-    @apply px-4 py-2 bg-brand-700 text-white rounded-lg hover:bg-brand-800 transition-colors font-medium;
+    @apply px-5 py-2.5 bg-gradient-to-r from-terracotta-400 to-terracotta-500 text-white rounded-xl
+           hover:from-terracotta-500 hover:to-terracotta-600
+           transition-all duration-300 font-medium shadow-warm
+           hover:shadow-warm-lg hover:-translate-y-0.5 active:translate-y-0;
   }
 
   .btn-secondary {
-    @apply px-4 py-2 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300 transition-colors font-medium;
+    @apply px-5 py-2.5 bg-cream-200 text-brand-700 rounded-xl
+           hover:bg-cream-300 transition-all duration-300 font-medium
+           border border-brand-200 hover:border-brand-300
+           hover:-translate-y-0.5 active:translate-y-0;
+  }
+
+  .btn-success {
+    @apply px-5 py-2.5 bg-gradient-to-r from-sage-400 to-sage-500 text-white rounded-xl
+           hover:from-sage-500 hover:to-sage-600
+           transition-all duration-300 font-medium shadow-warm
+           hover:shadow-warm-lg hover:-translate-y-0.5;
   }
 
   .btn-small {
-    @apply px-3 py-1 text-sm rounded-md transition-colors font-medium;
+    @apply px-3 py-1.5 text-sm rounded-lg transition-all duration-200 font-medium;
   }
 
+  /* Cards */
   .card {
-    @apply bg-white rounded-lg shadow-md p-6 border border-gray-100;
+    @apply bg-white rounded-2xl shadow-warm p-6 border border-cream-300
+           transition-all duration-300 hover:shadow-warm-lg;
+  }
+
+  .card-interactive {
+    @apply card cursor-pointer hover:-translate-y-1;
   }
 
   .card-header {
     @apply flex items-center justify-between mb-4;
   }
 
-  .section-title {
-    @apply text-2xl font-bold text-gray-900 mb-6;
+  /* Stat Cards */
+  .stat-card {
+    @apply bg-white rounded-2xl shadow-warm p-5 border border-cream-300
+           transition-all duration-300 hover:shadow-warm-lg hover:-translate-y-1
+           relative overflow-hidden;
   }
 
+  .stat-card::before {
+    content: '';
+    @apply absolute top-0 left-0 w-1 h-full bg-gradient-to-b from-terracotta-400 to-mustard-400;
+  }
+
+  .stat-value {
+    @apply text-4xl font-bold bg-gradient-to-r from-brand-600 to-terracotta-500
+           bg-clip-text text-transparent;
+  }
+
+  .stat-label {
+    @apply text-sm text-brand-600 mt-1 font-medium;
+  }
+
+  /* Section titles */
+  .section-title {
+    @apply text-3xl font-bold text-brand-800 mb-6;
+    font-family: 'Georgia', serif;
+  }
+
+  /* Form elements */
   .form-input {
-    @apply w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500;
+    @apply w-full px-4 py-3 border-2 border-cream-300 rounded-xl
+           focus:outline-none focus:ring-2 focus:ring-terracotta-300 focus:border-terracotta-400
+           bg-white transition-all duration-200
+           placeholder:text-brand-400;
   }
 
   .form-label {
-    @apply block text-sm font-medium text-gray-700 mb-1;
+    @apply block text-sm font-semibold text-brand-700 mb-2;
   }
+
+  /* Checkbox styling */
+  .checkbox-wrapper {
+    @apply flex items-center gap-3 p-3 rounded-xl bg-cream-50 border border-cream-200
+           transition-all duration-200 cursor-pointer
+           hover:bg-cream-100 hover:border-cream-300;
+  }
+
+  .checkbox-wrapper input[type="checkbox"] {
+    @apply w-5 h-5 rounded-md border-2 border-brand-300
+           checked:bg-terracotta-500 checked:border-terracotta-500
+           focus:ring-2 focus:ring-terracotta-300 focus:ring-offset-0
+           transition-all duration-200 cursor-pointer;
+  }
+
+  /* Navigation */
+  .nav-item {
+    @apply flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200
+           text-brand-600 hover:bg-cream-200 hover:text-brand-800;
+  }
+
+  .nav-item-active {
+    @apply bg-gradient-to-r from-terracotta-100 to-mustard-100
+           text-brand-800 font-semibold border border-terracotta-200;
+  }
+
+  .nav-icon {
+    @apply text-xl transition-transform duration-200;
+  }
+
+  .nav-item:hover .nav-icon {
+    @apply scale-110;
+  }
+
+  /* Status badges */
+  .badge {
+    @apply px-3 py-1 rounded-full text-xs font-semibold transition-all duration-200;
+  }
+
+  .badge-draft {
+    @apply bg-mustard-100 text-mustard-600 border border-mustard-200;
+  }
+
+  .badge-approved {
+    @apply bg-blue-100 text-blue-600 border border-blue-200;
+  }
+
+  .badge-published {
+    @apply bg-sage-100 text-sage-600 border border-sage-200;
+  }
+
+  .badge-pending {
+    @apply bg-cream-200 text-brand-500 border border-cream-300;
+  }
+
+  /* Progress bar */
+  .progress-bar {
+    @apply w-full bg-cream-200 rounded-full h-3 overflow-hidden;
+  }
+
+  .progress-fill {
+    @apply h-full rounded-full transition-all duration-500 ease-out
+           bg-gradient-to-r from-terracotta-400 via-mustard-400 to-sage-400;
+  }
+
+  /* List items */
+  .list-item {
+    @apply flex items-center gap-4 p-4 rounded-xl border border-cream-200 bg-white
+           transition-all duration-200 hover:border-terracotta-200 hover:bg-cream-50
+           hover:shadow-warm cursor-pointer;
+  }
+
+  /* Tooltips */
+  .tooltip {
+    @apply absolute z-50 px-3 py-2 text-sm bg-brand-800 text-white rounded-lg
+           shadow-lg opacity-0 invisible transition-all duration-200;
+  }
+
+  /* Loading states */
+  .skeleton {
+    @apply bg-gradient-to-r from-cream-200 via-cream-100 to-cream-200
+           animate-pulse rounded-xl;
+  }
+
+  .spinner {
+    @apply w-6 h-6 border-3 border-cream-300 border-t-terracotta-500 rounded-full
+           animate-spin;
+  }
+
+  /* Alerts */
+  .alert-success {
+    @apply p-4 rounded-xl bg-sage-100 border border-sage-300 text-sage-700;
+  }
+
+  .alert-error {
+    @apply p-4 rounded-xl bg-coral-100 border border-coral-300 text-coral-600;
+  }
+
+  .alert-info {
+    @apply p-4 rounded-xl bg-blue-50 border border-blue-200 text-blue-700;
+  }
+
+  .alert-warning {
+    @apply p-4 rounded-xl bg-mustard-100 border border-mustard-300 text-mustard-600;
+  }
+}
+
+/* Custom animations */
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.shimmer {
+  background: linear-gradient(90deg,
+    theme('colors.cream.200') 25%,
+    theme('colors.cream.100') 50%,
+    theme('colors.cream.200') 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+}
+
+/* Floating animation for decorative elements */
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-10px); }
+}
+
+.animate-float {
+  animation: float 3s ease-in-out infinite;
+}
+
+/* Gentle pulse for highlights */
+@keyframes gentle-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+.animate-gentle-pulse {
+  animation: gentle-pulse 2s ease-in-out infinite;
+}
+
+/* Stagger animations for lists */
+.stagger-animation > * {
+  animation: slideUp 0.4s ease-out forwards;
+  opacity: 0;
+}
+
+.stagger-animation > *:nth-child(1) { animation-delay: 0.1s; }
+.stagger-animation > *:nth-child(2) { animation-delay: 0.2s; }
+.stagger-animation > *:nth-child(3) { animation-delay: 0.3s; }
+.stagger-animation > *:nth-child(4) { animation-delay: 0.4s; }
+.stagger-animation > *:nth-child(5) { animation-delay: 0.5s; }
+.stagger-animation > *:nth-child(6) { animation-delay: 0.6s; }
+
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-cream-100 rounded-full;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-brand-300 rounded-full hover:bg-brand-400;
+}
+
+/* Focus visible for accessibility */
+*:focus-visible {
+  @apply outline-2 outline-offset-2 outline-terracotta-400;
 }

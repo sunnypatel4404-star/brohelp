@@ -132,11 +132,14 @@ const app = express()
 const PORT = process.env.API_PORT || 5000
 
 // ============ RATE LIMITING ============
-
+// Commented out for now but kept for future implementation
+/*
 interface RateLimitEntry {
   count: number
   resetTime: number
 }
+
+// Rate limiting code
 
 const rateLimitStore = new Map<string, RateLimitEntry>()
 
@@ -176,8 +179,11 @@ function checkRateLimit(key: string, maxRequests: number): { allowed: boolean; r
   entry.count++
   return { allowed: true, remaining: maxRequests - entry.count, resetIn: entry.resetTime - now }
 }
+*/
 
 // Rate limiting middleware for general endpoints
+// Commented out - not currently in use but kept for future implementation
+/*
 function rateLimitMiddleware(req: Request, res: Response, next: NextFunction): void {
   const key = getRateLimitKey(req)
   const result = checkRateLimit(key, RATE_LIMIT_MAX_REQUESTS)
@@ -218,6 +224,7 @@ function generateRateLimitMiddleware(req: Request, res: Response, next: NextFunc
 
   next()
 }
+*/
 
 // Middleware
 app.use(cors())
@@ -378,27 +385,21 @@ async function generateArticleBackground(
     let pinImageUrl: string | null = null
     if (generateImage) {
       updateJob(jobId, { steps: { ...getJob(jobId)!.steps, image: 'processing' } })
-      console.log(`[Job ${jobId}] Generating WordPress featured image...`)
+      console.log(`[Job ${jobId}] Generating images (Pinterest + WordPress from same source)...`)
 
       try {
-        // Generate WordPress featured image (square)
-        const wpImageResult = await imageGenerator.generateArticleImage({
+        // Generate both images from single Pinterest generation (ensures consistency + overlays)
+        const images = await imageGenerator.generateBothImages({
           topic,
           articleTitle: articleContent.title,
-          imageType: 'wordpress'
+          articleContent: articleContent.content
         })
-        wpImagePath = wpImageResult.localPath
-        result.imagePath = wpImagePath
 
-        // Generate Pinterest pin image (vertical)
-        console.log(`[Job ${jobId}] Generating Pinterest pin image...`)
-        const pinImageResult = await imageGenerator.generateArticleImage({
-          topic,
-          articleTitle: articleContent.title,
-          imageType: 'pinterest'
-        })
-        pinImagePath = pinImageResult.localPath
-        pinImageUrl = pinImageResult.url
+        wpImagePath = images.wordpress.localPath
+        pinImagePath = images.pinterest.localPath
+        pinImageUrl = images.pinterest.url
+
+        result.imagePath = wpImagePath
         result.pinImagePath = pinImagePath
 
         updateJob(jobId, {
@@ -467,6 +468,23 @@ async function generateArticleBackground(
             }
           } catch (err) {
             console.error(`[Job ${jobId}] Failed to upload featured image:`, err instanceof Error ? err.message : err)
+          }
+        }
+
+        // Also upload Pinterest image to WordPress for permanent URL
+        if (pinImagePath && postId) {
+          try {
+            const pinFileName = `pinterest-pin-${Date.now()}.png`
+            const pinMediaResult = await wordpress.uploadMedia(pinImagePath, pinFileName, 'image/png')
+            pinImageUrl = pinMediaResult.url
+            console.log(`[Job ${jobId}] Pinterest image uploaded to WordPress: ${pinImageUrl}`)
+
+            // Save WordPress URL to database
+            if (pinImagePath) {
+              imageGenerator.updateWordPressUrl(pinImagePath, pinMediaResult.url)
+            }
+          } catch (err) {
+            console.error(`[Job ${jobId}] Failed to upload Pinterest image:`, err instanceof Error ? err.message : err)
           }
         }
 
@@ -631,14 +649,260 @@ app.post('/api/pins/:id/publish', (req: Request, res: Response) => {
   }
 })
 
-interface ExportPinsRequest {
-  status?: string
+// ============ GENERATE PINS FROM URL ============
+
+interface GeneratePinsFromUrlRequest {
+  articleUrl: string
+  pinCount?: number  // 2-3 pins, default 3
+}
+
+app.post('/api/pins/generate-from-url', async (req: Request, res: Response) => {
+  try {
+    const { articleUrl, pinCount = 3 } = req.body as GeneratePinsFromUrlRequest
+
+    if (!articleUrl) {
+      return res.status(400).json({ error: 'Article URL is required' })
+    }
+
+    // Validate URL format
+    let url: URL
+    try {
+      url = new URL(articleUrl)
+    } catch {
+      return res.status(400).json({ error: 'Invalid URL format' })
+    }
+
+    // Fetch article content from WordPress
+    console.log(`📥 Fetching article from: ${articleUrl}`)
+
+    // Try to extract post ID from URL
+    const postIdMatch = articleUrl.match(/[?&]p=(\d+)/) || articleUrl.match(/\/(\d+)\/?$/)
+    let postId: number | undefined
+    if (postIdMatch) {
+      postId = parseInt(postIdMatch[1])
+    }
+
+    // Fetch the article content
+    const response = await fetch(articleUrl)
+    if (!response.ok) {
+      return res.status(400).json({ error: `Failed to fetch article: ${response.statusText}` })
+    }
+
+    const html = await response.text()
+
+    // Extract title from HTML
+    const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i) ||
+                       html.match(/<h1[^>]*class="[^"]*entry-title[^"]*"[^>]*>([^<]+)<\/h1>/i) ||
+                       html.match(/<h1[^>]*>([^<]+)<\/h1>/i)
+    const title = titleMatch ? titleMatch[1].replace(/\s*[-|–]\s*.*$/, '').trim() : 'Untitled Article'
+
+    // Extract content from HTML (basic extraction)
+    const contentMatch = html.match(/<article[^>]*>([\s\S]*?)<\/article>/i) ||
+                        html.match(/<div[^>]*class="[^"]*entry-content[^"]*"[^>]*>([\s\S]*?)<\/div>/i) ||
+                        html.match(/<main[^>]*>([\s\S]*?)<\/main>/i)
+    const rawContent = contentMatch ? contentMatch[1] : ''
+
+    // Strip HTML tags for excerpt
+    const content = rawContent
+      .replace(/<script[\s\S]*?<\/script>/gi, '')
+      .replace(/<style[\s\S]*?<\/style>/gi, '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .substring(0, 2000)
+
+    const excerpt = content.substring(0, 500)
+
+    console.log(`📝 Article title: ${title}`)
+    console.log(`📄 Content length: ${content.length} chars`)
+
+    // Generate pin variations
+    const pinService = new PinGenerationService(process.env.WORDPRESS_URL || 'https://parentvillage.blog')
+    const articleData = {
+      title,
+      content,
+      excerpt,
+      postId,
+      blogUrl: url.origin,
+      imageUrl: undefined as string | undefined
+    }
+
+    // Generate all variations first
+    const allVariations = pinService.generatePinVariations(articleData)
+
+    // Select the requested number of variations (2-3)
+    const selectedVariations = allVariations.slice(0, Math.min(Math.max(pinCount, 2), 3))
+
+    // Generate unique images for each pin variation
+    console.log(`🎨 Generating ${selectedVariations.length} unique pin images...`)
+
+    const imageService = new ImageGenerationService(
+      process.env.OPENAI_API_KEY || '',
+      './generated_images',
+      'gemini'
+    )
+
+    // Generate images with slightly different prompts for variety
+    const imagePrompts = [
+      title, // Original topic
+      `${title} - parent helping child`, // Parent-child focus
+      `${title} - tips and activities` // Activity focus
+    ]
+
+    for (let i = 0; i < selectedVariations.length; i++) {
+      try {
+        const promptVariation = imagePrompts[i] || title
+        console.log(`  🖼️  Generating image ${i + 1}/${selectedVariations.length}: "${promptVariation}"`)
+
+        const image = await imageService.generateArticleImage({
+          topic: promptVariation,
+          articleTitle: selectedVariations[i].title,
+          imageType: 'pinterest'
+        })
+
+        selectedVariations[i].imageUrl = image.localPath
+        console.log(`  ✅ Image ${i + 1} saved: ${image.localPath}`)
+      } catch (imgError) {
+        console.error(`  ❌ Failed to generate image ${i + 1}:`, imgError)
+        // Continue without image
+      }
+    }
+
+    // Generate tags
+    const ageGroup = content.toLowerCase().includes('toddler') ? 'toddler' :
+                     content.toLowerCase().includes('baby') ? 'baby' :
+                     content.toLowerCase().includes('teen') ? 'teen' : 'child'
+    const tags = pinService.generateTags(articleData, ageGroup)
+
+    // Create and save the pin
+    const savedPin = pinService.createSavedPin(articleData, selectedVariations, tags)
+
+    // Update variations with the article URL
+    savedPin.variations = savedPin.variations.map(v => ({
+      ...v,
+      link: articleUrl
+    }))
+
+    pinStorage.savePinDraft(savedPin)
+
+    console.log(`✅ Generated ${selectedVariations.length} pins for: ${title}`)
+
+    res.json({
+      success: true,
+      message: `Generated ${selectedVariations.length} pins`,
+      pin: savedPin
+    })
+  } catch (error) {
+    console.error('Error generating pins from URL:', error)
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to generate pins' })
+  }
+})
+
+// ============ EXPORT SELECTED PINS ============
+
+interface ExportSelectedPinsRequest {
+  pinIds: string[]
   format?: 'csv' | 'json'
 }
 
+app.post('/api/pins/export-selected', (req: Request, res: Response) => {
+  try {
+    const { pinIds, format = 'csv' } = req.body as ExportSelectedPinsRequest
+
+    if (!pinIds || !Array.isArray(pinIds) || pinIds.length === 0) {
+      return res.status(400).json({ error: 'Pin IDs array is required' })
+    }
+
+    const dashboardData = dashboard.getDashboardData()
+    const selectedPins = dashboardData.allPins.filter(p => pinIds.includes(p.id))
+
+    if (selectedPins.length === 0) {
+      return res.status(404).json({ error: 'No pins found with provided IDs' })
+    }
+
+    if (format === 'csv') {
+      const result = generatePinCSV(selectedPins, { page: 1, limit: PINTEREST_MAX_ROWS })
+
+      res.setHeader('Content-Type', 'text/csv')
+      res.setHeader('Content-Disposition', `attachment; filename="pins-selected-${Date.now()}.csv"`)
+      res.setHeader('X-Total-Rows', result.totalRows.toString())
+      res.setHeader('X-Pins-Exported', selectedPins.length.toString())
+      res.send(result.csv)
+    } else {
+      res.json({
+        pins: selectedPins,
+        count: selectedPins.length
+      })
+    }
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to export selected pins' })
+  }
+})
+
+interface ExportPinsRequest {
+  status?: string
+  format?: 'csv' | 'json'
+  page?: number      // Page number (1-indexed), default 1
+  limit?: number     // Rows per page, max 200 (Pinterest limit)
+}
+
+// Pinterest maximum rows per CSV upload
+const PINTEREST_MAX_ROWS = 200
+
 app.post('/api/pins/export', (req: Request, res: Response) => {
   try {
-    const { status, format = 'csv' } = req.body as ExportPinsRequest
+    const { status, format = 'csv', page = 1, limit = PINTEREST_MAX_ROWS, pinId } = req.body as ExportPinsRequest & { pinId?: string }
+    const dashboardData = dashboard.getDashboardData()
+    let pins = dashboardData.allPins
+
+    // Filter by specific pin ID if provided
+    if (pinId) {
+      pins = pins.filter(p => p.id === pinId)
+      if (pins.length === 0) {
+        return res.status(404).json({ error: 'Pin not found' })
+      }
+    }
+
+    // Filter by status if provided
+    if (status) {
+      pins = pins.filter(p => p.status === status)
+    }
+
+    if (format === 'csv') {
+      // Enforce Pinterest's 200 row limit
+      const effectiveLimit = Math.min(limit, PINTEREST_MAX_ROWS)
+      const result = generatePinCSV(pins, { page, limit: effectiveLimit })
+
+      res.setHeader('Content-Type', 'text/csv')
+      res.setHeader('Content-Disposition', `attachment; filename="pins-export-page${page}-${Date.now()}.csv"`)
+      res.setHeader('X-Total-Rows', result.totalRows.toString())
+      res.setHeader('X-Current-Page', result.currentPage.toString())
+      res.setHeader('X-Total-Pages', result.totalPages.toString())
+      res.setHeader('X-Rows-In-Page', result.rowsInPage.toString())
+      res.send(result.csv)
+    } else {
+      // For JSON format, also paginate
+      const effectiveLimit = Math.min(limit, PINTEREST_MAX_ROWS)
+      const startIndex = (page - 1) * effectiveLimit
+      const paginatedPins = pins.slice(startIndex, startIndex + effectiveLimit)
+
+      res.json({
+        pins: paginatedPins,
+        count: paginatedPins.length,
+        totalPins: pins.length,
+        currentPage: page,
+        totalPages: Math.ceil(pins.length / effectiveLimit)
+      })
+    }
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to export pins' })
+  }
+})
+
+// Get export info (how many pages needed)
+app.get('/api/pins/export/info', (req: Request, res: Response) => {
+  try {
+    const status = req.query.status as string | undefined
     const dashboardData = dashboard.getDashboardData()
     let pins = dashboardData.allPins
 
@@ -646,16 +910,27 @@ app.post('/api/pins/export', (req: Request, res: Response) => {
       pins = pins.filter(p => p.status === status)
     }
 
-    if (format === 'csv') {
-      const csv = generatePinCSV(pins)
-      res.setHeader('Content-Type', 'text/csv')
-      res.setHeader('Content-Disposition', `attachment; filename="pins-export-${Date.now()}.csv"`)
-      res.send(csv)
-    } else {
-      res.json({ pins, count: pins.length })
+    // Count total variations (rows)
+    let totalRows = 0
+    for (const pin of pins) {
+      totalRows += pin.variations?.length || 0
     }
+
+    const totalPages = Math.ceil(totalRows / PINTEREST_MAX_ROWS)
+
+    res.json({
+      totalPins: pins.length,
+      totalRows,
+      pinterestMaxRows: PINTEREST_MAX_ROWS,
+      totalPages,
+      pages: Array.from({ length: totalPages }, (_, i) => ({
+        page: i + 1,
+        startRow: i * PINTEREST_MAX_ROWS + 1,
+        endRow: Math.min((i + 1) * PINTEREST_MAX_ROWS, totalRows)
+      }))
+    })
   } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to export pins' })
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to get export info' })
   }
 })
 
@@ -802,6 +1077,19 @@ app.get('/api/health', (_req: Request, res: Response) => {
 
 // ============ HELPER FUNCTIONS ============
 
+interface PaginationOptions {
+  page?: number
+  limit?: number
+}
+
+interface CSVExportResult {
+  csv: string
+  totalRows: number
+  currentPage: number
+  totalPages: number
+  rowsInPage: number
+}
+
 function generatePinCSV(pins: Array<{
   id: string
   articleTitle: string
@@ -814,7 +1102,8 @@ function generatePinCSV(pins: Array<{
     link: string
     altText: string
   }>
-}>) {
+}>, options?: PaginationOptions): CSVExportResult {
+  const { page = 1, limit = 200 } = options || {}
   // Helper to format tags for Pinterest description
   // Pinterest allows hashtags in descriptions - they help with discoverability
   const formatTagsForDescription = (tags: string[] | undefined, maxTags: number = 5): string => {
@@ -849,67 +1138,66 @@ function generatePinCSV(pins: Array<{
   }
 
   // Helper to get a valid image URL for Pinterest bulk upload
-  // Media URL is REQUIRED and must be a publicly available URL
-  const getImageUrl = (imageUrl: string | undefined, pinId: string): { url: string; isPlaceholder: boolean } => {
-    // If we have a valid URL (http/https), use it
+  // Media URL is REQUIRED and must be a publicly available, permanent URL
+  const getImageUrl = (imageUrl: string | undefined, pinId: string, articleTitle: string): { url: string; isPlaceholder: boolean } => {
+    // Check if we have a permanent WordPress URL (not expired DALL-E URLs)
     if (imageUrl && imageUrl.trim() &&
-        (imageUrl.startsWith('http://') || imageUrl.startsWith('https://')) &&
+        imageUrl.includes('parentvillageblog.files.wordpress.com') &&
         !imageUrl.includes('[object Object]')) {
       return { url: imageUrl, isPlaceholder: false }
     }
 
-    // Otherwise use a placeholder image service with unique seed
-    // Using placeholder.com with a unique ID ensures different image for each pin
-    console.warn(`Warning: Pin ${pinId} has no valid public image URL, using placeholder`)
+    // Try to look up the Pinterest image from the images database by matching article title
+    try {
+      const db = getDatabase()
+
+      // Clean the article title for matching (remove emoji, lowercase, extract key words)
+      const cleanTitle = articleTitle
+        .replace(/[^\w\s-]/g, '')  // Remove emoji and special chars
+        .toLowerCase()
+        .trim()
+        .split(/\s+/)
+        .filter(w => w.length > 2)
+        .slice(0, 3)
+        .join('-')
+
+      // Look for a Pinterest image with matching topic
+      const imageRow = db.prepare(`
+        SELECT wordpress_url FROM images
+        WHERE filename LIKE ?
+        AND wordpress_url IS NOT NULL
+        AND wordpress_url != ''
+        ORDER BY created_at DESC
+        LIMIT 1
+      `).get(`pin_%${cleanTitle.substring(0, 20)}%`) as { wordpress_url: string } | undefined
+
+      if (imageRow?.wordpress_url) {
+        console.log(`Found WordPress image URL for pin ${pinId}: ${imageRow.wordpress_url}`)
+        return { url: imageRow.wordpress_url, isPlaceholder: false }
+      }
+    } catch (error) {
+      console.warn(`Could not look up image for pin ${pinId}:`, error)
+    }
+
+    // Fallback to placeholder if no permanent URL available
+    console.warn(`Warning: Pin ${pinId} has no valid WordPress image URL, using placeholder`)
     return {
       url: `https://via.placeholder.com/1000x1500/e8d5c4/2d3e50?text=Parent+Village+Pin+${pinId.slice(-6)}`,
       isPlaceholder: true
     }
   }
 
-  // Pinterest Bulk Editor v2 format - 153 columns
-  // This matches the official Pinterest template for managing promoted pins and ads
+  // Pinterest Bulk Upload format (updated 10/15/25)
+  // Simple 7-column format for organic pin uploads
+  // Source: https://help.pinterest.com/en/business/article/bulk-upload-video-pins
   const headers = [
-    'Campaign ID', 'Campaign Objective', 'Campaign Name', 'Campaign Status', 'Lifetime Spend Limit',
-    'Daily Spend Limit', 'Campaign Order Line ID', 'Campaign Third Party Tracking Urls', 'Campaign Budget',
-    'Default Ad Group Budget', 'Campaign Start Date', 'Campaign Start Time', 'Campaign End Date',
-    'Campaign End Time', 'Performance+ daily budget', 'Campaign Keyword (Match Type NEGATIVE_PHRASE)',
-    'Campaign Keyword (Match Type NEGATIVE_EXACT)', 'Ad Group ID', 'Ad Group Name', 'Ad Group Start Date*',
-    'Ad Group Start Time', 'Ad Group End Date*', 'Ad Group End Time', 'Ad Group Budget', 'Ad Group Pacing Type',
-    'Ad Group Budget Type', 'Ad Group Status', 'Max Bid', 'Monthly Frequency Cap', 'Ad Group Third Party Tracking Urls',
-    'Performance+ Targeting', 'Ad Placement', 'Goal Value', 'Conversion Tag ID', 'Conversion Event',
-    'Conversion Optimization', 'Click Window Days', 'Engagement Window Days', 'View Window Days',
-    'Frequency Target Time Range', 'Frequency Target', 'Bid strategy type', 'Targeting Template ID',
-    'Promo Id', 'Locations', 'Geos', 'Genders', 'AgeBuckets', 'Languages', 'Devices', 'Interests',
-    'Included Audiences', 'Excluded Audiences', 'Dynamic Retargeting Lookback', 'Dynamic Retargeting Exclusion',
-    'Dynamic Retargeting Event Tag Types', 'Ad Group Keyword (Match Type BROAD)', 'Ad Group Keyword (Match Type EXACT)',
-    'Ad Group Keyword (Match Type PHRASE)', 'Ad Group Keyword (Match Type NEGATIVE_PHRASE)',
-    'Ad Group Keyword (Match Type NEGATIVE_EXACT)', 'Existing Pin ID', 'Media File Name', 'Pin Title',
-    'Pin Description', 'Organic Pin URL', 'Image Alternative Text', 'Is Ad-only Pin', 'Promoted Pin Status',
-    'Promoted Pin ID', 'Ad Format', 'Promoted Pin Name', 'Promoted Pin URL', 'Promoted Pin Third Party Tracking Urls',
-    'Is Removable Pin Promotion', 'Carousel Card 1 Image File Name', 'Carousel Card 1 Title',
-    'Carousel Card 1 Description', 'Carousel Card 1 Organic Pin URL', 'Carousel Card 1 Destination URL',
-    'Carousel Card 1 Android Deep Link', 'Carousel Card 1 iOS Deep Link', 'Carousel Card 2 Image File Name',
-    'Carousel Card 2 Title', 'Carousel Card 2 Description', 'Carousel Card 2 Organic Pin URL',
-    'Carousel Card 2 Destination URL', 'Carousel Card 2 Android Deep Link', 'Carousel Card 2 iOS Deep Link',
-    'Carousel Card 3 Image File Name', 'Carousel Card 3 Title', 'Carousel Card 3 Description',
-    'Carousel Card 3 Organic Pin URL', 'Carousel Card 3 Destination URL', 'Carousel Card 3 Android Deep Link',
-    'Carousel Card 3 iOS Deep Link', 'Carousel Card 4 Image File Name', 'Carousel Card 4 Title',
-    'Carousel Card 4 Description', 'Carousel Card 4 Organic Pin URL', 'Carousel Card 4 Destination URL',
-    'Carousel Card 4 Android Deep Link', 'Carousel Card 4 iOS Deep Link', 'Carousel Card 5 Image File Name',
-    'Carousel Card 5 Title', 'Carousel Card 5 Description', 'Carousel Card 5 Organic Pin URL',
-    'Carousel Card 5 Destination URL', 'Carousel Card 5 Android Deep Link', 'Carousel Card 5 iOS Deep Link',
-    'Collections Secondary Creative Destination Url', 'Title Card Organic PinID', 'Card 1 Organic PinID',
-    'Card 2 Organic PinID', 'Card 3 Organic PinID', 'Card 4 Organic PinID', 'Quiz pin question 1 text',
-    'Question 1 options text', 'Quiz pin question 2 text', 'Question 2 options text', 'Quiz pin question 3 text',
-    'Question 3 options text', 'Result 1 organic Pin ID', 'Result 1 iOS deep link url', 'Result 1 Android deep link url',
-    'Result 1 destination url', 'Result 2 organic Pin ID', 'Result 2 iOS deep link url', 'Result 2 Android deep link url',
-    'Result 2 destination url', 'Result 3 organic Pin ID', 'Result 3 iOS deep link url', 'Result 3 Android deep link url',
-    'Result 3 destination url', 'Grid Click Type', 'CTA Selection', 'Keyword Status', 'Keyword (Match Type BROAD)',
-    'Keyword (Match Type EXACT)', 'Keyword (Match Type PHRASE)', 'Keyword (Match Type NEGATIVE_PHRASE)',
-    'Keyword (Match Type NEGATIVE_EXACT)', 'Product Group ID', 'Product Group Reference ID', 'Product Group Name',
-    'Product Group Status', 'Tracking Template', 'Shopping Collections Hero Pin ID', 'Shopping Collections Hero Pin URL',
-    'Slideshow Collections Title', 'Slideshow Collections Description', 'Status', 'Version'
+    'Title',              // Required: Pin title (max 100 characters)
+    'Media URL',          // Required: Publicly available image URL (.png, .jpg, .mp4)
+    'Pinterest board',    // Required: Board name (supports sections: "Board/Section")
+    'Description',        // Optional: max 500 characters
+    'Link',               // Optional: Destination URL when pin is clicked
+    'Publish date',       // Optional: YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS (UTC)
+    'Keywords'            // Optional: Comma-separated keywords for search
   ]
 
   // Track placeholder usage for summary warning
@@ -921,45 +1209,61 @@ function generatePinCSV(pins: Array<{
   pins.forEach((pin) => {
     pin.variations.forEach((variation) => {
       totalPins++
-      // Create an empty row with 153 columns
-      const row = new Array(153).fill('')
 
-      // Column 62: Media File Name (image URL)
-      const imageResult = getImageUrl(variation.imageUrl, pin.id)
-      row[62] = imageResult.url
+      // Media URL (required) - look up WordPress URL if not already set
+      const imageResult = getImageUrl(variation.imageUrl, pin.id, pin.articleTitle || '')
       if (imageResult.isPlaceholder) placeholderCount++
 
-      // Column 63: Pin Title (required)
-      row[63] = variation.title.substring(0, 100)
+      // Title (required, max 100 chars)
+      const title = variation.title.substring(0, 100)
 
-      // Column 64: Pin Description (max 500 chars) with hashtags appended
+      // Pinterest board (required)
+      const boardName = 'Parenting Tips'
+
+      // Description with hashtags (max 500 chars)
       const tagsString = formatTagsForDescription(pin.suggestedTags, 5)
       const descriptionWithTags = variation.description + tagsString
-      row[64] = descriptionWithTags.substring(0, 500)
+      const description = descriptionWithTags
+        .replace(/\n/g, ' ')
+        .replace(/\r/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .substring(0, 500)
 
-      // Column 65: Organic Pin URL (destination link)
-      row[65] = getLink(variation.link)
+      // Link (destination URL)
+      const link = getLink(variation.link)
 
-      // Column 66: Image Alternative Text
-      row[66] = variation.altText.substring(0, 200)
+      // Publish date (empty for immediate publish)
+      const publishDate = ''
 
-      // Column 67: Is Ad-only Pin (NO for organic pins)
-      row[67] = 'NO'
+      // Keywords (comma-separated, no # symbols)
+      const keywords = (pin.suggestedTags || [])
+        .map(tag => tag.replace(/^#/, ''))
+        .join(', ')
 
-      // Column 151: Status (ACTIVE for ready to promote)
-      row[151] = 'ACTIVE'
-
-      // Column 152: Version (V2 required)
-      row[152] = 'V2'
-
-      rows.push(row)
+      rows.push([
+        title,
+        imageResult.url,
+        boardName,
+        description,
+        link,
+        publishDate,
+        keywords
+      ])
     })
   })
+
+  // Calculate pagination
+  const totalRows = rows.length
+  const totalPages = Math.ceil(totalRows / limit)
+  const startIndex = (page - 1) * limit
+  const endIndex = Math.min(startIndex + limit, totalRows)
+  const paginatedRows = rows.slice(startIndex, endIndex)
 
   // Format CSV with proper escaping
   const headerRow = headers.map(h => `"${h}"`).join(',')
 
-  const dataRows = rows.map(row => {
+  const dataRows = paginatedRows.map(row => {
     return row
       .map(cell => {
         // Escape double quotes by doubling them
@@ -979,7 +1283,18 @@ function generatePinCSV(pins: Array<{
     console.warn(`   To fix: Ensure images are uploaded to WordPress before generating pins.\n`)
   }
 
-  return csvContent
+  // Log pagination info
+  if (totalPages > 1) {
+    console.log(`📄 CSV Export: Page ${page} of ${totalPages} (${paginatedRows.length} rows, ${totalRows} total)`)
+  }
+
+  return {
+    csv: csvContent,
+    totalRows,
+    currentPage: page,
+    totalPages,
+    rowsInPage: paginatedRows.length
+  }
 }
 
 // ============ START SERVER ============
@@ -994,7 +1309,8 @@ export function startApiServer(): void {
     console.log(`   GET    /api/pins`)
     console.log(`   POST   /api/pins/:id/approve`)
     console.log(`   POST   /api/pins/:id/publish`)
-    console.log(`   POST   /api/pins/export`)
+    console.log(`   POST   /api/pins/export (paginated, max 200 rows)`)
+    console.log(`   GET    /api/pins/export/info`)
     console.log(`   GET    /api/articles`)
     console.log(`   GET    /api/settings`)
     console.log(`   POST   /api/settings`)

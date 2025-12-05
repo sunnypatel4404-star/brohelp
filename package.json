@@ -18,11 +18,14 @@
     "generate-image": "ts-node src/backend/commands/generateImage.ts",
     "generate-pins": "ts-node src/backend/commands/generatePins.ts",
     "review-pins": "ts-node src/backend/commands/reviewPins.ts",
+    "review-images": "ts-node src/backend/commands/reviewImages.ts",
+    "upload-approved": "ts-node src/backend/commands/uploadApprovedImages.ts",
     "publish-draft": "ts-node src/backend/commands/publishDraft.ts",
     "dashboard": "ts-node src/backend/commands/dashboard.ts",
     "server": "ts-node src/backend/commands/server.ts",
     "migrate-db": "ts-node src/backend/database/migrate.ts",
-    "sync-wordpress": "ts-node src/backend/commands/syncWordpress.ts"
+    "sync-wordpress": "ts-node src/backend/commands/syncWordpress.ts",
+    "backfill-pins": "ts-node src/backend/commands/backfillPinImages.ts"
   },
   "keywords": [
     "wordpress",
@@ -34,6 +37,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@google/genai": "^1.30.0",
     "axios": "^1.13.2",
     "better-sqlite3": "^12.4.6",
     "cors": "^2.8.5",

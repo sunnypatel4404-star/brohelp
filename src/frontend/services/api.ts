@@ -71,22 +71,126 @@ export async function publishPin(id: string) {
   return response.data
 }
 
-export async function exportPins(status?: string, format: 'csv' | 'json' = 'csv') {
-  const response = await api.post('/pins/export', {
-    status,
-    format
+// Pinterest allows max 200 rows per CSV upload
+export const PINTEREST_MAX_ROWS = 200
+
+export interface ExportInfo {
+  totalPins: number
+  totalRows: number
+  pinterestMaxRows: number
+  totalPages: number
+  pages: Array<{ page: number; startRow: number; endRow: number }>
+}
+
+export async function getExportInfo(status?: string): Promise<ExportInfo> {
+  const response = await api.get('/pins/export/info', {
+    params: { status }
   })
   return response.data
 }
 
-export async function exportPinsAsCSV(status?: string): Promise<Blob> {
+export async function exportPins(status?: string, format: 'csv' | 'json' = 'csv', page: number = 1) {
   const response = await api.post('/pins/export', {
     status,
+    format,
+    page
+  })
+  return response.data
+}
+
+export interface CSVExportResult {
+  blob: Blob
+  totalPages: number
+  currentPage: number
+  totalRows: number
+  rowsInPage: number
+}
+
+export async function exportPinsAsCSV(status?: string, page: number = 1, pinId?: string): Promise<CSVExportResult> {
+  const response = await api.post('/pins/export', {
+    status,
+    format: 'csv',
+    page,
+    pinId
+  }, {
+    responseType: 'blob'
+  })
+
+  // Extract pagination info from headers
+  const totalPages = parseInt(response.headers['x-total-pages'] || '1', 10)
+  const currentPage = parseInt(response.headers['x-current-page'] || '1', 10)
+  const totalRows = parseInt(response.headers['x-total-rows'] || '0', 10)
+  const rowsInPage = parseInt(response.headers['x-rows-in-page'] || '0', 10)
+
+  return {
+    blob: response.data,
+    totalPages,
+    currentPage,
+    totalRows,
+    rowsInPage
+  }
+}
+
+// Export all pages as separate CSV files (for convenience)
+export async function exportAllPinsAsCSV(status?: string): Promise<CSVExportResult[]> {
+  const info = await getExportInfo(status)
+  const results: CSVExportResult[] = []
+
+  for (let page = 1; page <= info.totalPages; page++) {
+    const result = await exportPinsAsCSV(status, page)
+    results.push(result)
+  }
+
+  return results
+}
+
+// Generate pins from a WordPress article URL
+export interface GeneratePinsFromUrlResponse {
+  success: boolean
+  message: string
+  pin: {
+    id: string
+    articleTitle: string
+    variations: Array<{
+      angle: string
+      title: string
+      description: string
+      imageUrl?: string
+      link: string
+      altText: string
+    }>
+    status: string
+    createdAt: string
+  }
+}
+
+export async function generatePinsFromUrl(articleUrl: string, pinCount: number = 3): Promise<GeneratePinsFromUrlResponse> {
+  const response = await api.post('/pins/generate-from-url', {
+    articleUrl,
+    pinCount
+  })
+  return response.data
+}
+
+// Export selected pins by IDs
+export async function exportSelectedPinsAsCSV(pinIds: string[]): Promise<CSVExportResult> {
+  const response = await api.post('/pins/export-selected', {
+    pinIds,
     format: 'csv'
   }, {
     responseType: 'blob'
   })
-  return response.data
+
+  const pinsExported = parseInt(response.headers['x-pins-exported'] || '0', 10)
+  const totalRows = parseInt(response.headers['x-total-rows'] || '0', 10)
+
+  return {
+    blob: response.data,
+    totalPages: 1,
+    currentPage: 1,
+    totalRows,
+    rowsInPage: totalRows
+  }
 }
 
 // ============ CONTENT LIBRARY ============

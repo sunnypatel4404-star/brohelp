@@ -188,8 +188,19 @@ export class PinStorageService {
    * Format updated to match Pinterest template (10/15/25)
    * Required fields: Title, Media URL, Pinterest board
    * Optional fields: Description, Link, Publish date, Keywords
+   *
+   * Pinterest limits: Max 200 rows per CSV upload
+   * Use page parameter to export in batches
    */
-  exportPinsToCsv(status?: 'draft' | 'approved' | 'published'): string {
+  exportPinsToCsv(options?: {
+    status?: 'draft' | 'approved' | 'published';
+    page?: number;      // Page number (1-indexed), default 1
+    limit?: number;     // Rows per page, default 200 (Pinterest max)
+  }): { csv: string; totalRows: number; currentPage: number; totalPages: number; rowsInPage: number } {
+    const { status, page = 1, limit = 200 } = options || {};
+    const PINTEREST_MAX_ROWS = 200;
+    const effectiveLimit = Math.min(limit, PINTEREST_MAX_ROWS);
+
     let pins = this.listPinDrafts();
 
     if (status) {
@@ -207,7 +218,8 @@ export class PinStorageService {
       'Keywords'            // Optional: Comma-separated keywords
     ];
 
-    const rows = [];
+    // Build all rows first to get total count
+    const allRows: string[][] = [];
     for (const pin of pins) {
       for (const variation of pin.variations) {
         // Title: Max 100 characters
@@ -220,9 +232,15 @@ export class PinStorageService {
         const boardName = variation.boardName || 'Parenting Tips';
 
         // Description: Include hashtags, max 500 characters
+        // Remove newlines to prevent CSV formatting issues
         const tagsForDescription = this.formatTagsForDescription(pin.suggestedTags, 5);
         const descriptionWithTags = variation.description + tagsForDescription;
-        const description = descriptionWithTags.substring(0, 500);
+        const description = descriptionWithTags
+          .replace(/\n/g, ' ')  // Replace newlines with spaces
+          .replace(/\r/g, ' ')  // Replace carriage returns too
+          .replace(/\s+/g, ' ')  // Normalize multiple spaces
+          .trim()
+          .substring(0, 500);
 
         // Link: Destination URL
         const link = variation.link || '';
@@ -235,7 +253,7 @@ export class PinStorageService {
           .map(tag => tag.replace(/^#/, ''))
           .join(', ');
 
-        rows.push([
+        allRows.push([
           title,
           mediaUrl,
           boardName,
@@ -247,18 +265,40 @@ export class PinStorageService {
       }
     }
 
+    // Calculate pagination
+    const totalRows = allRows.length;
+    const totalPages = Math.ceil(totalRows / effectiveLimit);
+    const startIndex = (page - 1) * effectiveLimit;
+    const endIndex = Math.min(startIndex + effectiveLimit, totalRows);
+    const paginatedRows = allRows.slice(startIndex, endIndex);
+
     const csv = [
       headers.join(','),
-      ...rows.map(row =>
+      ...paginatedRows.map(row =>
         row.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(',')
       )
     ].join('\n');
 
-    return csv;
+    return {
+      csv,
+      totalRows,
+      currentPage: page,
+      totalPages,
+      rowsInPage: paginatedRows.length
+    };
+  }
+
+  /**
+   * Legacy method for backwards compatibility
+   * Returns just the CSV string (first 200 rows)
+   */
+  exportPinsToCsvString(status?: 'draft' | 'approved' | 'published'): string {
+    return this.exportPinsToCsv({ status }).csv;
   }
 
   /**
    * Format tags for Pinterest description
+   * Note: Using space instead of newlines to avoid breaking CSV format
    */
   private formatTagsForDescription(tags: string[], maxTags: number = 5): string {
     if (!tags || tags.length === 0) return '';
@@ -271,7 +311,7 @@ export class PinStorageService {
       })
       .filter(tag => tag.length > 1);
 
-    return formattedTags.length > 0 ? '\n\n' + formattedTags.join(' ') : '';
+    return formattedTags.length > 0 ? ' ' + formattedTags.join(' ') : '';
   }
 
   /**

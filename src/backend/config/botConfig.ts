@@ -75,7 +75,7 @@ CONTENT STRUCTURE:
 6. Include a "Key Takeaway" section before closing
 
 FORMATTING REQUIREMENTS:
-- Include relevant emoji in the title (e.g., 🌱, 💻, 💰, 🌞, 🌿)
+- Include exactly ONE relevant emoji at the end of the title (e.g., 🌱, 💻, 💰, 🌞, 🌿) - never more than one emoji in the title
 - Use italics for key concepts and emphasis
 - Include specific book titles, product names, and real-world examples
 - Segment advice by age groups when relevant
