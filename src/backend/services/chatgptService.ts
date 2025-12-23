@@ -5,6 +5,7 @@ interface ArticleRequest {
   topic: string;
   config?: BotConfig;
   includeExcerpt?: boolean;
+  internalLinkingInstructions?: string;
 }
 
 interface GeneratedArticle {
@@ -33,7 +34,8 @@ export class ChatGPTService {
     const {
       topic,
       config = this.config,
-      includeExcerpt = true
+      includeExcerpt = true,
+      internalLinkingInstructions = ''
     } = request;
 
     if (!config) {
@@ -59,6 +61,7 @@ Requirements:
   "content": "Full HTML-formatted article content here with proper h2/h3 tags and escaped quotes...",
   ${includeExcerpt ? '"excerpt": "A brief 1-2 sentence excerpt here..."' : ''}
 }
+${internalLinkingInstructions}
 
 Remember to:
 - Use warm, conversational language

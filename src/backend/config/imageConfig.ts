@@ -1,6 +1,6 @@
 /**
  * Image Generation Configuration
- * Defines separate parameters for WordPress featured images and Pinterest pin images
+ * Style: Warm, modern parenting blog illustrations like the Co-Regulation example
  */
 
 export type ImageType = 'wordpress' | 'pinterest';
@@ -9,263 +9,268 @@ export interface ImageGenerationConfig {
   size: '1024x1024' | '1024x1792' | '1792x1024';
   quality: 'standard' | 'hd';
   style: 'vivid' | 'natural';
-  promptTemplate: (topic: string) => string;
+  promptTemplate: (topic: string, articleContent?: string) => string;
 }
 
 /**
- * Generate a specific visual scene description based on the topic
- * This translates abstract topics into concrete visual descriptions
- * Exported for potential future use in advanced prompt generation
+ * Get a specific illustration description for a topic
+ * Each description explicitly states WHO is in the scene (parent, child, multiple children, etc.)
  */
-export function generateSceneForTopic(topic: string): string {
+function getIllustrationForTopic(topic: string): string {
   const lowerTopic = topic.toLowerCase();
 
-  // Keyword-based scene mapping for common parenting topics
-  const sceneMap: Array<{ keywords: string[]; scene: string }> = [
-    // Sharing
+  // Map topics to specific illustrations with EXPLICIT character descriptions
+  // Order matters - more specific keywords first
+  const illustrations: Array<{ keywords: string[]; illustration: string }> = [
+    // PLAYDATES & SOCIAL - TWO OR MORE CHILDREN
     {
-      keywords: ['share', 'sharing'],
-      scene: 'Two small children\'s hands - one giving and one receiving a colorful toy. Show the moment of exchange with a teddy bear or wooden toy being passed between the hands. Hearts or sparkles around the exchange to emphasize kindness.'
+      keywords: ['playdate', 'play date', 'friend', 'friendship', 'social skill'],
+      illustration: 'TWO CHILDREN sitting together on the floor, playing with toys between them. One child is handing a toy to the other child. Both children are smiling. A small heart floats between them. The children are LARGE in the frame, taking up most of the image.'
     },
-    // Food/Snacks/Eating
+    // CO-REGULATION & CALMING
     {
-      keywords: ['snack', 'food', 'eat', 'meal', 'lunch', 'breakfast', 'dinner', 'nutrition', 'feeding'],
-      scene: 'A cheerful arrangement of healthy kid-friendly foods: apple slices with cute faces, carrot sticks, grapes, cheese cubes, and crackers arranged on a pastel plate. A small juice box and napkin nearby. Everything looks appetizing and fun.'
+      keywords: ['co-regulation', 'calm down', 'regulate', 'sooth', 'comfort'],
+      illustration: 'A PARENT and CHILD sitting cross-legged facing each other, holding hands gently. Both have peaceful expressions with closed eyes. A small heart floats between them. Soft clouds in the background. The figures are LARGE and centered.'
     },
-    // Reading/Books
+    // GRATITUDE & THANKFULNESS
     {
-      keywords: ['read', 'book', 'story', 'stories', 'literacy'],
-      scene: 'An open illustrated children\'s book with colorful pages visible, surrounded by a cozy reading setup: a soft blanket, a stuffed bunny, and a warm cup. Magical sparkles coming from the book pages.'
+      keywords: ['grateful', 'gratitude', 'thankful', 'thank', 'appreciation'],
+      illustration: 'A CHILD hugging a PARENT warmly. Hearts floating around them. Both have happy, content expressions. The figures are LARGE and take up most of the image.'
     },
-    // Sleep/Bedtime
+    // SLEEP & BEDTIME
     {
-      keywords: ['sleep', 'bed', 'bedtime', 'nap', 'night', 'dream'],
-      scene: 'A cozy bed scene with fluffy pillows, a soft blanket, and a teddy bear tucked in. A crescent moon and stars visible through a window. A nightlight glowing softly. Everything suggests peaceful sleep.'
+      keywords: ['sleep', 'bedtime', 'nap', 'night', 'dream'],
+      illustration: 'A CHILD peacefully sleeping in bed, tucked under a soft blanket, hugging a teddy bear. A crescent moon and stars visible through a window. The sleeping child is LARGE and centered in the frame.'
     },
-    // Potty Training
+    // POTTY TRAINING
     {
-      keywords: ['potty', 'toilet', 'bathroom', 'training'],
-      scene: 'A cute child-sized potty chair in pastel colors with a small step stool nearby. Toilet paper roll with a bow, hand soap, and a cheerful star chart on the wall showing progress. Encouraging and non-scary.'
+      keywords: ['potty', 'toilet', 'bathroom training'],
+      illustration: 'A proud TODDLER standing next to a small colorful potty chair, with arms raised in celebration. A PARENT nearby giving a thumbs up. Gold stars floating around. The figures are LARGE in the frame.'
     },
-    // Learning/Education
+    // READING TOGETHER
     {
-      keywords: ['learn', 'abc', 'alphabet', 'numbers', 'count', 'teach', 'education', 'school'],
-      scene: 'Colorful wooden alphabet blocks spelling out ABC, with crayons, a small chalkboard, and educational toys scattered around. A child\'s drawing and gold star stickers visible.'
+      keywords: ['read', 'book', 'story', 'literacy'],
+      illustration: 'A PARENT and CHILD sitting close together on a couch, the parent holding an open book. The child looks engaged and happy. The figures are LARGE and take up most of the image.'
     },
-    // Play/Toys
+    // SHARING - TWO CHILDREN
     {
-      keywords: ['play', 'toy', 'game', 'fun'],
-      scene: 'A delightful arrangement of classic toys: wooden blocks, a spinning top, stuffed animals, a toy train, and colorful balls. Everything arranged playfully with movement suggested.'
+      keywords: ['share', 'sharing', 'turns', 'taking turns'],
+      illustration: 'TWO CHILDREN sitting together. One child is offering a toy to the other child with a smile. Hearts floating between them. Both children are LARGE in the frame.'
     },
-    // Emotions/Feelings
+    // EMOTIONS & FEELINGS
     {
-      keywords: ['emotion', 'feeling', 'happy', 'sad', 'angry', 'tantrum', 'calm'],
-      scene: 'A collection of emoji-like faces showing different emotions (happy, sad, surprised, calm) arranged in a circle. Soft clouds and hearts around them. Gentle and approachable.'
+      keywords: ['emotion', 'feeling', 'tantrum', 'meltdown', 'angry', 'sad', 'upset', 'big feeling'],
+      illustration: 'A PARENT kneeling down at child level, gently holding a CHILD who looks upset. The parent has a calm, loving expression. A heart floats nearby. The figures are LARGE and centered.'
     },
-    // Safety
+    // FOOD & EATING
     {
-      keywords: ['safe', 'safety', 'protect', 'childproof'],
-      scene: 'A cozy protected space with safety elements: outlet covers, cabinet locks, soft corner protectors, and a baby gate. A happy house with a protective shield around it.'
+      keywords: ['food', 'eat', 'meal', 'nutrition', 'picky', 'feeding', 'snack'],
+      illustration: 'A happy CHILD sitting at a small table with a colorful plate of food - fruits, vegetables, and healthy snacks arranged nicely. The child is LARGE and centered in the frame.'
     },
-    // Health/Wellness
+    // OUTDOOR & NATURE
     {
-      keywords: ['health', 'doctor', 'sick', 'medicine', 'wellness', 'vaccine'],
-      scene: 'A friendly medical kit with a toy stethoscope, bandaids with fun patterns, a thermometer, and a teddy bear patient. Non-scary, comforting medical scene.'
+      keywords: ['outdoor', 'outside', 'nature', 'park', 'garden'],
+      illustration: 'A PARENT and CHILD walking together hand-in-hand in a sunny park. Flowers, butterflies, and trees around them. Both are smiling. The figures are LARGE in the frame.'
     },
-    // Outdoor/Nature
+    // SOLO PLAY
     {
-      keywords: ['outdoor', 'outside', 'nature', 'park', 'garden', 'walk'],
-      scene: 'A sunny park scene with a swing, sandbox, flowers, butterflies, and a picnic blanket. Trees, birds, and fluffy clouds in a welcoming outdoor setting.'
+      keywords: ['play', 'toy', 'game', 'imagination', 'pretend'],
+      illustration: 'A CHILD happily playing with colorful blocks or toys on the floor. The child is focused and joyful. Maybe a stuffed animal nearby. The child is LARGE and centered in the frame.'
     },
-    // Manners/Behavior
+    // MANNERS
     {
-      keywords: ['manner', 'polite', 'thank', 'please', 'behavior', 'kind'],
-      scene: 'Two small figures bowing or waving kindly to each other with speech bubbles showing "Thank You" and "Please". Hearts floating around them. Warm and friendly interaction.'
+      keywords: ['manner', 'polite', 'please', 'etiquette'],
+      illustration: 'A CHILD and ADULT facing each other. The child has hands together politely. The adult is smiling warmly. A heart or star floats between them. The figures are LARGE in the frame.'
     },
-    // Screen Time/Technology
+    // SIBLINGS
     {
-      keywords: ['screen', 'tablet', 'phone', 'tv', 'technology', 'digital', 'video'],
-      scene: 'A tablet device showing colorful educational content, with a timer nearby and a clock. Balance shown with books and toys next to the device. Healthy tech usage.'
+      keywords: ['sibling', 'brother', 'sister', 'new baby'],
+      illustration: 'An OLDER CHILD gently holding or hugging a BABY sibling. Hearts floating between them. Both look content. The figures are LARGE and centered.'
     },
-    // Siblings
+    // DISCIPLINE & BOUNDARIES
     {
-      keywords: ['sibling', 'brother', 'sister', 'baby', 'newborn', 'new baby'],
-      scene: 'Two pairs of small shoes side by side - one bigger, one tiny baby shoe. A baby onesie and a big kid shirt together. Hearts connecting them. Sweet sibling connection.'
+      keywords: ['discipline', 'boundary', 'rule', 'limit', 'consequence'],
+      illustration: 'A PARENT and CHILD sitting at eye level, having a calm conversation. The parent has a gentle but firm expression. The child is listening. The figures are LARGE and centered.'
     },
-    // Discipline/Boundaries
+    // HEALTH & DOCTOR
     {
-      keywords: ['discipline', 'boundary', 'rule', 'timeout', 'consequence'],
-      scene: 'A visual checklist with checkmarks and stars, a calm corner with a soft cushion, and a visual timer. Structured but gentle approach to boundaries.'
+      keywords: ['health', 'doctor', 'sick', 'medicine', 'checkup'],
+      illustration: 'A friendly DOCTOR or PARENT with a CHILD, in a non-scary medical moment. Maybe the child holding a toy stethoscope. Both smiling. The figures are LARGE in the frame.'
     },
-    // Mindfulness/Meditation/Calm
+    // CONFIDENCE
     {
-      keywords: ['mindful', 'meditation', 'meditate', 'calm', 'peace', 'yoga', 'breathe', 'breathing', 'relax'],
-      scene: 'A peaceful scene with a child sitting cross-legged in a calm pose. Soft clouds, gentle stars, maybe a small plant nearby. Bubbles or soft circles floating around suggesting peaceful breathing. Everything very calm and centered.'
+      keywords: ['confidence', 'self-esteem', 'brave', 'courage', 'proud'],
+      illustration: 'A CHILD standing tall with arms raised triumphantly, like a superhero pose. Stars and sparkles around them. A PARENT watching proudly in the background. The child is LARGE and centered.'
     },
-    // Crying/Soothing Baby
+    // ROUTINE
     {
-      keywords: ['cry', 'crying', 'sooth', 'soothe', 'comfort', 'fussy', 'upset'],
-      scene: 'Gentle hands cradling a small baby, with soft blanket, pacifier, and gentle rocking motion suggested. Hearts and soft musical notes. Warm, comforting, nurturing scene.'
+      keywords: ['routine', 'schedule', 'morning', 'habit'],
+      illustration: 'A PARENT and CHILD going through a morning routine together - maybe brushing teeth or getting dressed. Both are smiling. The figures are LARGE in the frame.'
     },
-    // Responsibility/Chores
+    // KINDNESS - TWO CHILDREN
     {
-      keywords: ['responsib', 'chore', 'task', 'help', 'cleaning'],
-      scene: 'Child-sized cleaning tools arranged nicely: small broom, toy dustpan, spray bottle with flowers, small watering can. A simple chore chart with stars. Everything looks fun and manageable for kids.'
+      keywords: ['kind', 'kindness', 'compassion', 'empathy', 'gentle', 'caring'],
+      illustration: 'One CHILD helping another CHILD who fell down, or giving them a hug. Hearts floating around. Both children are LARGE in the frame.'
     },
-    // Biting
+    // PATIENCE
     {
-      keywords: ['bite', 'biting'],
-      scene: 'A gentle "no biting" visual with a teething toy, a soft mouth illustration showing kind words coming out instead. Hearts and gentle reminders. Non-scary, educational approach.'
+      keywords: ['patience', 'patient', 'wait', 'waiting'],
+      illustration: 'A CHILD sitting calmly with hands folded, perhaps looking at a timer or waiting for cookies. A PARENT nearby. Both are calm. The figures are LARGE in the frame.'
     },
-    // Warmth/Cold Weather
+    // HONESTY
     {
-      keywords: ['warm', 'cold', 'winter', 'coat', 'jacket'],
-      scene: 'Cozy winter items arranged sweetly: a soft scarf, mittens, warm hat, maybe boots. Snowflakes and warm cocoa mug. Everything feels snug and comfortable.'
+      keywords: ['honest', 'honesty', 'truth', 'lying', 'trust'],
+      illustration: 'A PARENT and CHILD having a heart-to-heart talk, sitting together at eye level. Both have open, sincere expressions. A heart between them. The figures are LARGE and centered.'
     },
-    // Bedtime/Sleep Routines
+    // INDEPENDENCE
     {
-      keywords: ['routine', 'schedule', 'habit'],
-      scene: 'A sweet daily routine chart with simple icons: sun for morning, plate for meals, moon for bedtime. Clock faces, stars for completed tasks. Visual and friendly.'
+      keywords: ['independent', 'independence', 'self-care', 'themselves'],
+      illustration: 'A proud CHILD doing something independently - like tying shoes or pouring cereal. A PARENT watching proudly from nearby. The child is LARGE and centered.'
     },
-    // ABCs/Letters/Learning
+    // CHORES
     {
-      keywords: ['letter', 'writing', 'handwriting'],
-      scene: 'Colorful alphabet cards, crayons, a small notebook with big letters. Maybe magnetic letters on a board. Fun and educational without being overwhelming.'
+      keywords: ['chore', 'responsib', 'cleaning', 'helping', 'tidy'],
+      illustration: 'A CHILD happily helping with a task - putting toys away or wiping a table. A PARENT giving encouragement. The figures are LARGE in the frame.'
     },
-    // Money/Allowance
+    // LEARNING
     {
-      keywords: ['money', 'allowance', 'coin', 'save', 'saving'],
-      scene: 'A cute piggy bank with some coins, a small jar with money, maybe a simple chart showing saving progress. Teaching financial concepts in a kid-friendly way.'
+      keywords: ['abc', 'alphabet', 'letters', 'numbers', 'counting', 'learning', 'school', 'preschool'],
+      illustration: 'A PARENT and CHILD at a small table with colorful learning materials. The child looks curious and engaged. The figures are LARGE and centered.'
     },
-    // Curfew/Rules
+    // COMMUNICATION
     {
-      keywords: ['curfew', 'bedtime', 'schedule'],
-      scene: 'A friendly clock showing bedtime, moon and stars, maybe a simple calendar. Visual representation of time and routines that kids can understand.'
+      keywords: ['talk', 'communicat', 'listen', 'conversation', 'speaking'],
+      illustration: 'A PARENT and CHILD sitting together, having a warm conversation. Eye contact, leaning in. Hearts or speech bubbles with hearts. The figures are LARGE in the frame.'
     },
-    // Confidence/Self-esteem
+    // ART
     {
-      keywords: ['confidence', 'self-esteem', 'brave', 'courage'],
-      scene: 'A child standing tall with arms up in victory pose. Hearts, stars, and encouraging symbols around them. A mirror showing positive reflection. Everything radiates positivity and strength.'
+      keywords: ['art', 'craft', 'draw', 'paint', 'creative', 'color'],
+      illustration: 'A CHILD happily painting or drawing at an easel or table. Colorful artwork visible. Maybe a PARENT watching. The child is LARGE and centered.'
     },
-    // Kindness/Compassion
+    // SEPARATION
     {
-      keywords: ['kind', 'kindness', 'compassion', 'caring', 'empathy'],
-      scene: 'Two children helping each other - one offering a hand to help the other up. Hearts floating between them. Friendly animals nearby. Warm, caring, gentle scene.'
+      keywords: ['separation', 'goodbye', 'daycare', 'leaving', 'drop off'],
+      illustration: 'A PARENT hugging a CHILD goodbye, with a visible heart connecting them even as they prepare to part. Both have loving expressions. The figures are LARGE and centered.'
     },
-    // Friendship
+    // MINDFULNESS
     {
-      keywords: ['friend', 'friendship', 'social'],
-      scene: 'Two or three children holding hands or playing together happily. Hearts, smiles, shared toys. Everything shows connection and joy.'
+      keywords: ['mindful', 'meditation', 'yoga', 'breathe', 'relax', 'calm'],
+      illustration: 'A PARENT and CHILD sitting peacefully cross-legged together, eyes closed, calm expressions. Soft clouds around them. A heart between them. The figures are LARGE and centered.'
     },
-    // Anger/Emotions Management
+    // SCREEN TIME
     {
-      keywords: ['anger', 'mad', 'frustrated', 'emotion control'],
-      scene: 'A calm down corner with soft cushions, a breathing visual (like bubbles), emotion faces chart. Peaceful tools for managing big feelings.'
+      keywords: ['screen', 'tablet', 'phone', 'tv', 'technology', 'device'],
+      illustration: 'A PARENT and CHILD together, with a tablet showing a timer nearby. Books and outdoor toys visible, showing balance. The figures are LARGE in the frame.'
     },
-    // Homework/Learning
+    // TODDLER
     {
-      keywords: ['homework', 'study', 'learning'],
-      scene: 'A desk with colorful books, pencils, notebook, maybe a small lamp. Stars for achievements. Everything looks organized and encouraging.'
+      keywords: ['toddler', 'terrible twos', 'two year', '2 year'],
+      illustration: 'A cute TODDLER walking or playing, with a PARENT nearby watching lovingly. The toddler is the focus, LARGE and centered in the frame.'
     },
-    // Gratitude/Thankfulness
+    // BABY
     {
-      keywords: ['gratitude', 'grateful', 'thankful', 'appreciation'],
-      scene: 'A gratitude jar with colorful notes, hearts around it. Maybe flowers or things to be thankful for arranged beautifully. Warm and appreciative feeling.'
-    }
+      keywords: ['baby', 'infant', 'newborn', 'month old'],
+      illustration: 'A PARENT gently holding a BABY, looking down with love. Hearts floating. The figures are LARGE and take up most of the image.'
+    },
+    // TEEN
+    {
+      keywords: ['teen', 'tween', 'adolescent', 'preteen', 'teenager'],
+      illustration: 'A PARENT and TEENAGER sitting together, having a respectful conversation. Both are LARGE and centered in the frame.'
+    },
+    // NAVIGATING/GENERAL
+    {
+      keywords: ['navigat', 'tips', 'guide', 'how to', 'help your', 'ways to'],
+      illustration: 'A PARENT and CHILD together, looking happy and connected. A heart or lightbulb symbol nearby. The figures are LARGE and centered.'
+    },
   ];
 
-  // Find matching scene based on keywords
-  for (const mapping of sceneMap) {
-    if (mapping.keywords.some(keyword => lowerTopic.includes(keyword))) {
-      return mapping.scene;
+  // Find matching illustration
+  for (const item of illustrations) {
+    if (item.keywords.some(keyword => lowerTopic.includes(keyword))) {
+      return item.illustration;
     }
   }
 
-  // Default fallback for unmatched topics - create a generic but descriptive scene
-  return `A warm, inviting illustration that clearly represents "${topic}". Show the key objects, actions, or concepts associated with this topic in a way that any parent would immediately recognize. Make it obvious what the image is about through visual storytelling.`;
+  // Fallback - always show parent and child together
+  const words = topic.split(/\s+/).filter(w => w.length > 3);
+  const mainConcept = words.slice(0, 3).join(' ');
+  return `A PARENT and CHILD together in a warm, loving moment related to "${mainConcept}". Both are smiling. A heart floats between them. The figures are LARGE and take up most of the image.`;
 }
 
 /**
- * ParentVillage Pastel Pinterest Style Configuration
- *
- * STYLE REQUIREMENTS:
- * - Flat illustration style (no gradients, no photorealism, no harsh shadows)
- * - Soft pastel color palette (gentle pinks, baby blues, mint, lavender, peach, cream, butter yellow)
- * - Rounded, friendly character design (children's book aesthetic)
- * - Minimal shading, minimal texture
- * - Clean bright background with lots of negative space
- * - Soft, low-contrast line art (brown or muted purple preferred)
- * - Pinterest vertical format (2:3 aspect ratio)
- * - Large, clean title text at the top in rounded or playful font
- * - Main illustration in the center
- * - Small branding text "ParentVillage.blog" at the bottom
- *
- * Overall vibe: warm, cheerful, mom-friendly, gentle, pastel, modern, minimalist, inviting
+ * The target style prompt - based on the Co-Regulation example image
  */
+const STYLE_PROMPT = `
+⛔️ MANDATORY: ZERO TEXT IN IMAGE ⛔️
+This image must contain ZERO text, ZERO words, ZERO letters, ZERO titles, ZERO labels.
+Do not write the topic. Do not add any captions. ILLUSTRATION ONLY.
+Text will be added separately by software.
+
+STYLE (MUST FOLLOW EXACTLY):
+- Modern flat 2D vector illustration style
+- Warm, soft pastel colors: peach/coral, mint green, soft blue, cream, light purple
+- Plain warm cream/beige background - NO shapes, NO large decorative elements behind the characters
+- Characters should look like CHILDREN (small, cute proportions - not adults):
+  - Small bodies with slightly larger heads (child proportions)
+  - Simple round faces with rosy cheeks
+  - Dot eyes, simple curved smile
+  - Natural skin tones
+  - Simple solid-color clothing
+- Background: PLAIN cream color only. Maybe 1-2 tiny soft clouds. NO large shapes or decorative elements.
+- NO harsh lines or dark outlines
+- Clean, minimal, uncluttered
+
+CHARACTER PROPORTIONS:
+- Children should look like YOUNG CHILDREN (ages 3-6), not adults
+- Cute, small proportions - not chunky or oversized
+- Characters should be the focal point but properly sized
+
+COMPOSITION:
+- Leave space at TOP of image (for title overlay added later)
+- Main characters/scene positioned in the MIDDLE area
+- Leave a small amount of space at the very bottom for branding
+
+DO NOT ADD:
+- No large decorative shapes behind the characters
+- No busy backgrounds
+- NO TEXT OF ANY KIND
+`;
 
 /**
  * Pinterest Pin Image Configuration
- * Optimized for Pinterest 2:3 aspect ratio (1024x1792)
  */
 export const pinterestImageConfig: ImageGenerationConfig = {
-  size: '1024x1792', // Will be resized to 1024x1536 (2:3 standard Pinterest)
+  size: '1024x1792',
   quality: 'hd',
   style: 'natural',
 
-  promptTemplate: (topic: string) => {
-    const scene = generateSceneForTopic(topic);
-    return `Create a flat 2D vector illustration for a parenting blog.
+  promptTemplate: (topic: string, _articleContent?: string) => {
+    const illustration = getIllustrationForTopic(topic);
 
-TOPIC: "${topic}"
+    return `⛔️ CRITICAL: DO NOT ADD ANY TEXT, WORDS, OR LETTERS TO THIS IMAGE ⛔️
 
-WHAT TO DRAW:
-${scene}
+Create a simple illustration showing: ${illustration}
 
-CRITICAL RULES:
-1. Objects like blocks, toys, books, food must NOT have faces, eyes, or expressions - they are inanimate
-2. Only human characters (parent, child) should have faces
-3. Do not draw anthropomorphized objects
-
-STYLE:
-- Warm cream/beige background (#FFF5E6)
-- Flat vector art, simple shapes, no gradients or 3D effects
-- Pastel colors: coral, mint/teal, soft earth tones
-- Human characters: closed happy eyes, rosy cheeks, rounded features
-- Illustration centered with margins at top and bottom
-- No text, watermarks, or logos`;
+${STYLE_PROMPT}`;
   }
 };
 
 /**
  * WordPress Featured Image Configuration
- * Optimized for blog featured images (portrait format)
  */
 export const wordpressImageConfig: ImageGenerationConfig = {
-  size: '1024x1792', // Will be resized to 1024x1536 (2:3 standard)
-  quality: 'standard',
+  size: '1024x1792',
+  quality: 'hd',
   style: 'natural',
 
-  promptTemplate: (topic: string) => {
-    const scene = generateSceneForTopic(topic);
-    return `Create a flat 2D vector illustration for a parenting blog.
+  promptTemplate: (topic: string, _articleContent?: string) => {
+    const illustration = getIllustrationForTopic(topic);
 
-TOPIC: "${topic}"
+    return `⛔️ CRITICAL: DO NOT ADD ANY TEXT, WORDS, OR LETTERS TO THIS IMAGE ⛔️
 
-WHAT TO DRAW:
-${scene}
+Create a simple illustration showing: ${illustration}
 
-CRITICAL RULES:
-1. Objects like blocks, toys, books, food must NOT have faces, eyes, or expressions - they are inanimate
-2. Only human characters (parent, child) should have faces
-3. Do not draw anthropomorphized objects
-
-STYLE:
-- Warm cream/beige background (#FFF5E6)
-- Flat vector art, simple shapes, no gradients or 3D effects
-- Pastel colors: coral, mint/teal, soft earth tones
-- Human characters: closed happy eyes, rosy cheeks, rounded features
-- Illustration centered with margins at top and bottom
-- No text, watermarks, or logos`;
+${STYLE_PROMPT}`;
   }
 };
 

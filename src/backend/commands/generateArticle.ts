@@ -5,6 +5,7 @@ import { WordPressXmlRpcService } from '../services/wordpressXmlrpcService';
 import { ImageGenerationService } from '../services/imageGenerationService';
 import { PinGenerationService } from '../services/pinGenerationService';
 import { PinStorageService } from '../services/pinStorageService';
+import { InternalLinkingService } from '../services/internalLinkingService';
 import { parentVillageBotConfig } from '../config/botConfig';
 
 dotenv.config();
@@ -84,13 +85,19 @@ async function main() {
     const chatgpt = new ChatGPTService(openaiApiKey, parentVillageBotConfig);
     const wordpress = new WordPressXmlRpcService(wordpressUrl, wordpressUsername, wordpressPassword);
     const imageService = new ImageGenerationService(openaiApiKey);
+    const internalLinking = new InternalLinkingService(wordpress);
+
     console.log(`📝 Generating article about: "${topic}"\n`);
     console.log(`Configuration: ${parentVillageBotConfig.publishingFrequency} publishing, ${parentVillageBotConfig.wordCountMin}-${parentVillageBotConfig.wordCountMax} words\n`);
+
+    // Fetch existing articles for internal linking
+    const internalLinkingInstructions = await internalLinking.getInternalLinkingInstructions();
 
     const article = await chatgpt.generateArticle({
       topic,
       config: parentVillageBotConfig,
-      includeExcerpt: true
+      includeExcerpt: true,
+      internalLinkingInstructions
     });
 
     console.log(`\n📄 Article generated successfully\n`);

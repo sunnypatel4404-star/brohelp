@@ -181,7 +181,6 @@ export async function exportSelectedPinsAsCSV(pinIds: string[]): Promise<CSVExpo
     responseType: 'blob'
   })
 
-  const pinsExported = parseInt(response.headers['x-pins-exported'] || '0', 10)
   const totalRows = parseInt(response.headers['x-total-rows'] || '0', 10)
 
   return {

@@ -93,6 +93,48 @@ function initializeSchema(database: Database.Database): void {
       steps TEXT NOT NULL DEFAULT '{}'
     );
 
+    -- Retry queue for failed jobs
+    CREATE TABLE IF NOT EXISTS job_retries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      job_id TEXT NOT NULL,
+      retry_count INTEGER NOT NULL DEFAULT 0,
+      max_retries INTEGER NOT NULL DEFAULT 3,
+      next_retry_at TEXT,
+      last_error TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (job_id) REFERENCES jobs(id) ON DELETE CASCADE
+    );
+
+    -- Articles table for duplicate detection and history
+    CREATE TABLE IF NOT EXISTS articles (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      topic TEXT NOT NULL,
+      topic_normalized TEXT NOT NULL,
+      title TEXT,
+      post_id INTEGER,
+      job_id TEXT,
+      wordpress_url TEXT,
+      status TEXT NOT NULL DEFAULT 'draft',
+      created_at TEXT NOT NULL,
+      published_at TEXT,
+      word_count INTEGER,
+      FOREIGN KEY (job_id) REFERENCES jobs(id)
+    );
+
+    -- Scheduled content table
+    CREATE TABLE IF NOT EXISTS scheduled_content (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      topic TEXT NOT NULL,
+      scheduled_at TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      job_id TEXT,
+      created_at TEXT NOT NULL,
+      executed_at TEXT,
+      error TEXT,
+      recurrence TEXT,
+      FOREIGN KEY (job_id) REFERENCES jobs(id)
+    );
+
     -- Indexes for common queries
     CREATE INDEX IF NOT EXISTS idx_pins_status ON pins(status);
     CREATE INDEX IF NOT EXISTS idx_pins_created_at ON pins(created_at);
@@ -100,6 +142,11 @@ function initializeSchema(database: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
     CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at);
     CREATE INDEX IF NOT EXISTS idx_images_created_at ON images(created_at);
+    CREATE INDEX IF NOT EXISTS idx_job_retries_next_retry ON job_retries(next_retry_at);
+    CREATE INDEX IF NOT EXISTS idx_articles_topic_normalized ON articles(topic_normalized);
+    CREATE INDEX IF NOT EXISTS idx_articles_created_at ON articles(created_at);
+    CREATE INDEX IF NOT EXISTS idx_scheduled_content_scheduled_at ON scheduled_content(scheduled_at);
+    CREATE INDEX IF NOT EXISTS idx_scheduled_content_status ON scheduled_content(status);
   `);
 
   console.log('Database schema initialized');

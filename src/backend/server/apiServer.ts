@@ -11,6 +11,14 @@ import { PinStorageService } from '../services/pinStorageService'
 import { DashboardService } from '../services/dashboardService'
 import { BotConfig } from '../config/botConfig'
 import { getDatabase, JobRow } from '../database/database'
+import { authMiddleware, generateApiKey, listApiKeys, revokeApiKey, initializeApiKeysTable } from '../middleware/auth'
+import logger, { apiLogger, jobLifecycle } from '../services/logger'
+import { queueForRetry, getJobsDueForRetry, getRetryQueueStats, getPendingRetries } from '../services/retryQueueService'
+import { checkForDuplicate, recordArticle, updateArticle, getArticleByJobId, getRecentArticles, getArticleStats } from '../services/duplicateDetectionService'
+import * as scheduler from '../services/schedulerService'
+import * as imageBackup from '../services/imageBackupService'
+import { wordpressSyncService } from '../services/wordpressSyncService'
+import { InternalLinkingService } from '../services/internalLinkingService'
 
 dotenv.config()
 
@@ -226,9 +234,30 @@ function generateRateLimitMiddleware(req: Request, res: Response, next: NextFunc
 }
 */
 
+// Initialize API keys table
+initializeApiKeysTable()
+
 // Middleware
 app.use(cors())
 app.use(express.json())
+
+// Request logging middleware
+app.use((req: Request, res: Response, next: NextFunction) => {
+  const startTime = Date.now()
+  res.on('finish', () => {
+    const duration = Date.now() - startTime
+    apiLogger.http('Request', {
+      method: req.method,
+      path: req.path,
+      statusCode: res.statusCode,
+      duration: `${duration}ms`
+    })
+  })
+  next()
+})
+
+// Apply authentication middleware (can be disabled via API_AUTH_DISABLED=true)
+app.use(authMiddleware)
 
 // Load config
 const botConfig: BotConfig = {
@@ -255,6 +284,7 @@ const wordpress = new WordPressXmlRpcService(
 const pinGenerator = new PinGenerationService(process.env.WORDPRESS_URL || '')
 const pinStorage = new PinStorageService()
 const dashboard = new DashboardService()
+const internalLinking = new InternalLinkingService(wordpress)
 
 // Error handling middleware
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -270,6 +300,7 @@ interface GenerateArticleRequest {
   generateImage?: boolean
   uploadToWordPress?: boolean
   generatePins?: boolean
+  allowDuplicate?: boolean  // Skip duplicate check if true
 }
 
 // Validate and sanitize topic input for API
@@ -304,7 +335,7 @@ function validateTopicInput(topic: unknown): { valid: boolean; error?: string; s
 
 app.post('/api/articles/generate', async (req: Request, res: Response) => {
   try {
-    const { topic: rawTopic, generateImage = true, uploadToWordPress = true, generatePins = true } = req.body as GenerateArticleRequest
+    const { topic: rawTopic, generateImage = true, uploadToWordPress = true, generatePins = true, allowDuplicate = false } = req.body as GenerateArticleRequest
 
     // Validate topic input
     const validation = validateTopicInput(rawTopic)
@@ -315,19 +346,51 @@ app.post('/api/articles/generate', async (req: Request, res: Response) => {
 
     const topic = validation.sanitized!
 
+    // Check for duplicate topics (unless explicitly allowed)
+    if (!allowDuplicate) {
+      const duplicateCheck = checkForDuplicate(topic)
+      if (duplicateCheck.isDuplicate) {
+        res.status(409).json({
+          error: 'Duplicate topic detected',
+          message: duplicateCheck.exactMatch
+            ? `An article with this exact topic already exists (ID: ${duplicateCheck.exactMatch.id})`
+            : `A very similar article exists: "${duplicateCheck.similarArticles[0]?.topic}"`,
+          existingArticle: duplicateCheck.exactMatch,
+          similarArticles: duplicateCheck.similarArticles,
+          hint: 'Set allowDuplicate: true to generate anyway'
+        })
+        return
+      }
+
+      // Warn about similar articles but allow generation
+      if (duplicateCheck.similarArticles.length > 0) {
+        logger.info('Similar topics found but proceeding', {
+          topic,
+          similarCount: duplicateCheck.similarArticles.length
+        })
+      }
+    }
+
     // Create a trackable job
     const job = createJob(topic)
     cleanupOldJobs()
 
+    // Record article in database for future duplicate detection
+    const articleId = recordArticle({ topic, jobId: job.id, status: 'generating' })
+
+    jobLifecycle.started(job.id, topic)
+
     res.status(200).json({
       message: 'Article generation started',
       status: 'processing',
-      jobId: job.id
+      jobId: job.id,
+      articleId
     })
 
     // Run in background with job tracking
     generateArticleBackground(job.id, topic, generateImage, uploadToWordPress, generatePins)
   } catch (error) {
+    logger.error('Failed to start article generation', { error: error instanceof Error ? error.message : String(error) })
     res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to start article generation' })
   }
 })
@@ -364,16 +427,32 @@ async function generateArticleBackground(
   generatePins: boolean
 ): Promise<void> {
   const result: JobStatus['result'] = {}
+  const startTime = Date.now()
 
   try {
     updateJob(jobId, { status: 'processing' })
 
     // Step 1: Generate article content
+    jobLifecycle.stepStarted(jobId, 'article')
     updateJob(jobId, { steps: { ...getJob(jobId)!.steps, article: 'processing' } })
-    console.log(`[Job ${jobId}] Generating article for topic: ${topic}`)
+    logger.info(`[Job ${jobId}] Generating article for topic: ${topic}`)
 
-    const articleContent = await chatgpt.generateArticle({ topic })
+    // Fetch existing articles for internal linking
+    const internalLinkingInstructions = await internalLinking.getInternalLinkingInstructions()
+
+    const articleContent = await chatgpt.generateArticle({ topic, internalLinkingInstructions })
     result.articleTitle = articleContent.title
+
+    // Update article record with title
+    const articleRecord = getArticleByJobId(jobId)
+    if (articleRecord) {
+      updateArticle(articleRecord.id, {
+        title: articleContent.title,
+        wordCount: articleContent.content.split(/\s+/).length
+      })
+    }
+
+    jobLifecycle.stepCompleted(jobId, 'article', Date.now() - startTime)
     updateJob(jobId, {
       steps: { ...getJob(jobId)!.steps, article: 'completed' },
       result
@@ -536,16 +615,49 @@ async function generateArticleBackground(
       updateJob(jobId, { steps: { ...getJob(jobId)!.steps, pins: 'skipped' } })
     }
 
+    // Update article status to completed
+    const finalArticleRecord = getArticleByJobId(jobId)
+    if (finalArticleRecord && result.postId) {
+      updateArticle(finalArticleRecord.id, {
+        postId: result.postId,
+        status: 'draft',
+        wordpressUrl: `${process.env.WORDPRESS_URL}/?p=${result.postId}`
+      })
+    }
+
     updateJob(jobId, { status: 'completed', result })
-    console.log(`[Job ${jobId}] Article generation complete`)
+    jobLifecycle.completed(jobId, {
+      articleTitle: result.articleTitle,
+      postId: result.postId,
+      pinsGenerated: result.pinsGenerated,
+      duration: Date.now() - startTime
+    })
+    logger.info(`[Job ${jobId}] Article generation complete`)
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error)
-    console.error(`[Job ${jobId}] Article generation failed:`, errorMessage)
+    logger.error(`[Job ${jobId}] Article generation failed:`, { error: errorMessage })
+    jobLifecycle.failed(jobId, errorMessage)
+
+    // Queue for retry
+    const retryResult = queueForRetry(jobId, errorMessage)
+    if (retryResult.queued) {
+      logger.info(`[Job ${jobId}] Queued for retry`, {
+        retryCount: retryResult.retryCount,
+        nextRetryAt: retryResult.nextRetryAt
+      })
+    }
+
     updateJob(jobId, {
       status: 'failed',
       error: errorMessage,
       result
     })
+
+    // Update article status to failed
+    const articleRecord = getArticleByJobId(jobId)
+    if (articleRecord) {
+      updateArticle(articleRecord.id, { status: 'failed' })
+    }
   }
 }
 
@@ -656,12 +768,13 @@ interface GeneratePinsFromUrlRequest {
   pinCount?: number  // 2-3 pins, default 3
 }
 
-app.post('/api/pins/generate-from-url', async (req: Request, res: Response) => {
+app.post('/api/pins/generate-from-url', async (req: Request, res: Response): Promise<void> => {
   try {
     const { articleUrl, pinCount = 3 } = req.body as GeneratePinsFromUrlRequest
 
     if (!articleUrl) {
-      return res.status(400).json({ error: 'Article URL is required' })
+      res.status(400).json({ error: 'Article URL is required' })
+      return
     }
 
     // Validate URL format
@@ -669,7 +782,8 @@ app.post('/api/pins/generate-from-url', async (req: Request, res: Response) => {
     try {
       url = new URL(articleUrl)
     } catch {
-      return res.status(400).json({ error: 'Invalid URL format' })
+      res.status(400).json({ error: 'Invalid URL format' })
+      return
     }
 
     // Fetch article content from WordPress
@@ -685,7 +799,8 @@ app.post('/api/pins/generate-from-url', async (req: Request, res: Response) => {
     // Fetch the article content
     const response = await fetch(articleUrl)
     if (!response.ok) {
-      return res.status(400).json({ error: `Failed to fetch article: ${response.statusText}` })
+      res.status(400).json({ error: `Failed to fetch article: ${response.statusText}` })
+      return
     }
 
     const html = await response.text()
@@ -805,19 +920,21 @@ interface ExportSelectedPinsRequest {
   format?: 'csv' | 'json'
 }
 
-app.post('/api/pins/export-selected', (req: Request, res: Response) => {
+app.post('/api/pins/export-selected', (req: Request, res: Response): void => {
   try {
     const { pinIds, format = 'csv' } = req.body as ExportSelectedPinsRequest
 
     if (!pinIds || !Array.isArray(pinIds) || pinIds.length === 0) {
-      return res.status(400).json({ error: 'Pin IDs array is required' })
+      res.status(400).json({ error: 'Pin IDs array is required' })
+      return
     }
 
     const dashboardData = dashboard.getDashboardData()
     const selectedPins = dashboardData.allPins.filter(p => pinIds.includes(p.id))
 
     if (selectedPins.length === 0) {
-      return res.status(404).json({ error: 'No pins found with provided IDs' })
+      res.status(404).json({ error: 'No pins found with provided IDs' })
+      return
     }
 
     if (format === 'csv') {
@@ -849,7 +966,7 @@ interface ExportPinsRequest {
 // Pinterest maximum rows per CSV upload
 const PINTEREST_MAX_ROWS = 200
 
-app.post('/api/pins/export', (req: Request, res: Response) => {
+app.post('/api/pins/export', (req: Request, res: Response): void => {
   try {
     const { status, format = 'csv', page = 1, limit = PINTEREST_MAX_ROWS, pinId } = req.body as ExportPinsRequest & { pinId?: string }
     const dashboardData = dashboard.getDashboardData()
@@ -859,7 +976,8 @@ app.post('/api/pins/export', (req: Request, res: Response) => {
     if (pinId) {
       pins = pins.filter(p => p.id === pinId)
       if (pins.length === 0) {
-        return res.status(404).json({ error: 'Pin not found' })
+        res.status(404).json({ error: 'Pin not found' })
+        return
       }
     }
 
@@ -1065,13 +1183,408 @@ app.post('/api/settings', (req: Request, res: Response) => {
   }
 })
 
+// ============ API KEY MANAGEMENT ============
+
+// Generate a new API key (requires existing admin key or initial setup)
+app.post('/api/auth/keys', (req: Request, res: Response): void => {
+  try {
+    const { name } = req.body as { name: string }
+    if (!name || typeof name !== 'string' || name.length < 3) {
+      res.status(400).json({ error: 'Name is required (min 3 characters)' })
+      return
+    }
+
+    const result = generateApiKey(name)
+    logger.info('API key generated', { name, id: result.id })
+
+    res.json({
+      message: 'API key generated successfully',
+      key: result.key,  // Only shown once!
+      id: result.id,
+      warning: 'Save this key securely - it cannot be retrieved again!'
+    })
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to generate API key' })
+  }
+})
+
+// List all API keys (without the actual keys)
+app.get('/api/auth/keys', (_req: Request, res: Response) => {
+  try {
+    const keys = listApiKeys()
+    res.json({ keys })
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to list API keys' })
+  }
+})
+
+// Revoke an API key
+app.delete('/api/auth/keys/:id', (req: Request, res: Response): void => {
+  try {
+    const id = parseInt(req.params.id)
+    if (isNaN(id)) {
+      res.status(400).json({ error: 'Invalid key ID' })
+      return
+    }
+
+    const success = revokeApiKey(id)
+    if (success) {
+      logger.info('API key revoked', { id })
+      res.json({ message: 'API key revoked' })
+    } else {
+      res.status(404).json({ error: 'API key not found' })
+    }
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to revoke API key' })
+  }
+})
+
+// ============ RETRY QUEUE MANAGEMENT ============
+
+// Get retry queue stats
+app.get('/api/retries/stats', (_req: Request, res: Response) => {
+  try {
+    const stats = getRetryQueueStats()
+    res.json(stats)
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to get retry stats' })
+  }
+})
+
+// Get pending retries
+app.get('/api/retries', (_req: Request, res: Response) => {
+  try {
+    const retries = getPendingRetries()
+    res.json({ retries, count: retries.length })
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to get retries' })
+  }
+})
+
+// Process due retries manually
+app.post('/api/retries/process', async (_req: Request, res: Response) => {
+  try {
+    const dueRetries = getJobsDueForRetry()
+    const results: { jobId: string; status: string }[] = []
+
+    for (const retry of dueRetries) {
+      const job = getJob(retry.jobId)
+      if (job) {
+        // Re-run the job
+        generateArticleBackground(job.id, job.topic, true, true, true)
+        results.push({ jobId: retry.jobId, status: 'restarted' })
+        logger.info('Retry triggered manually', { jobId: retry.jobId })
+      }
+    }
+
+    res.json({
+      message: `Processed ${results.length} retries`,
+      results
+    })
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to process retries' })
+  }
+})
+
+// ============ ARTICLE MANAGEMENT ============
+
+// Get article history with duplicate detection info
+app.get('/api/articles/history', (req: Request, res: Response) => {
+  try {
+    const limit = parseInt(req.query.limit as string) || 50
+    const articles = getRecentArticles(limit)
+    const stats = getArticleStats()
+    res.json({ articles, stats })
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to get article history' })
+  }
+})
+
+// Check if a topic is duplicate
+app.post('/api/articles/check-duplicate', (req: Request, res: Response): void => {
+  try {
+    const { topic } = req.body as { topic: string }
+    if (!topic) {
+      res.status(400).json({ error: 'Topic is required' })
+      return
+    }
+
+    const result = checkForDuplicate(topic)
+    res.json({
+      isDuplicate: result.isDuplicate,
+      exactMatch: result.exactMatch,
+      similarArticles: result.similarArticles
+    })
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to check for duplicates' })
+  }
+})
+
+// ============ CONTENT SCHEDULING ============
+
+// Schedule content for future generation
+app.post('/api/schedule', (req: Request, res: Response): void => {
+  try {
+    const { topic, scheduledAt, recurrence } = req.body as {
+      topic: string
+      scheduledAt: string
+      recurrence?: 'daily' | 'weekly' | 'monthly'
+    }
+
+    if (!topic || !scheduledAt) {
+      res.status(400).json({ error: 'Topic and scheduledAt are required' })
+      return
+    }
+
+    // Validate scheduled time is in the future
+    const scheduleDate = new Date(scheduledAt)
+    if (isNaN(scheduleDate.getTime())) {
+      res.status(400).json({ error: 'Invalid scheduledAt date format' })
+      return
+    }
+    if (scheduleDate <= new Date()) {
+      res.status(400).json({ error: 'scheduledAt must be in the future' })
+      return
+    }
+
+    const scheduled = scheduler.scheduleContent(topic, scheduleDate, { recurrence })
+    logger.info('Content scheduled', { id: scheduled.id, topic, scheduledAt })
+
+    res.json({
+      message: 'Content scheduled successfully',
+      scheduled
+    })
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to schedule content' })
+  }
+})
+
+// Get scheduled content
+app.get('/api/schedule', (req: Request, res: Response) => {
+  try {
+    const status = req.query.status as string | undefined
+    const limit = parseInt(req.query.limit as string) || 100
+    const scheduled = scheduler.getScheduledContent({ status, limit })
+    const stats = scheduler.getSchedulerStats()
+    res.json({ scheduled, stats })
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to get scheduled content' })
+  }
+})
+
+// Get upcoming scheduled content
+app.get('/api/schedule/upcoming', (req: Request, res: Response) => {
+  try {
+    const limit = parseInt(req.query.limit as string) || 10
+    const upcoming = scheduler.getUpcomingScheduledContent(limit)
+    res.json({ upcoming })
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to get upcoming content' })
+  }
+})
+
+// Update scheduled content
+app.put('/api/schedule/:id', (req: Request, res: Response): void => {
+  try {
+    const id = parseInt(req.params.id)
+    if (isNaN(id)) {
+      res.status(400).json({ error: 'Invalid schedule ID' })
+      return
+    }
+
+    const { topic, scheduledAt, recurrence } = req.body as {
+      topic?: string
+      scheduledAt?: string
+      recurrence?: string | null
+    }
+
+    const success = scheduler.updateScheduledContent(id, { topic, scheduledAt, recurrence })
+    if (success) {
+      res.json({ message: 'Schedule updated' })
+    } else {
+      res.status(404).json({ error: 'Scheduled content not found or not pending' })
+    }
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to update schedule' })
+  }
+})
+
+// Cancel scheduled content
+app.delete('/api/schedule/:id', (req: Request, res: Response): void => {
+  try {
+    const id = parseInt(req.params.id)
+    if (isNaN(id)) {
+      res.status(400).json({ error: 'Invalid schedule ID' })
+      return
+    }
+
+    const success = scheduler.cancelScheduledContent(id)
+    if (success) {
+      logger.info('Scheduled content cancelled', { id })
+      res.json({ message: 'Scheduled content cancelled' })
+    } else {
+      res.status(404).json({ error: 'Scheduled content not found or not pending' })
+    }
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to cancel schedule' })
+  }
+})
+
+// ============ IMAGE BACKUP ============
+
+// Get backup statistics
+app.get('/api/backups/stats', (_req: Request, res: Response) => {
+  try {
+    const stats = imageBackup.getBackupStats()
+    res.json(stats)
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to get backup stats' })
+  }
+})
+
+// Run backup for all new images
+app.post('/api/backups/run', (_req: Request, res: Response) => {
+  try {
+    const result = imageBackup.backupAllNewImages()
+    logger.info('Image backup completed', { successful: result.successful, failed: result.failed })
+    res.json(result)
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to run backup' })
+  }
+})
+
+// Clean up old backups
+app.post('/api/backups/cleanup', (_req: Request, res: Response) => {
+  try {
+    const result = imageBackup.cleanupOldBackups()
+    res.json({
+      message: 'Cleanup completed',
+      ...result,
+      freedMB: Math.round(result.freedBytes / 1024 / 1024 * 100) / 100
+    })
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to cleanup backups' })
+  }
+})
+
+// Verify backup integrity
+app.get('/api/backups/verify', (_req: Request, res: Response) => {
+  try {
+    const result = imageBackup.verifyBackupIntegrity()
+    res.json(result)
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to verify backups' })
+  }
+})
+
+// Restore an image from backup
+app.post('/api/backups/restore', (req: Request, res: Response): void => {
+  try {
+    const { filename } = req.body as { filename: string }
+    if (!filename) {
+      res.status(400).json({ error: 'Filename is required' })
+      return
+    }
+
+    const result = imageBackup.restoreImage(filename)
+    if (result.success) {
+      res.json({ message: 'Image restored', path: result.backupPath })
+    } else {
+      res.status(404).json({ error: result.error })
+    }
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to restore image' })
+  }
+})
+
+// ============ WORDPRESS SYNC ============
+
+// Get sync summary
+app.get('/api/sync/summary', async (_req: Request, res: Response) => {
+  try {
+    const summary = await wordpressSyncService.getSyncSummary()
+    res.json(summary)
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to get sync summary' })
+  }
+})
+
+// Run full sync check
+app.post('/api/sync/check', async (_req: Request, res: Response) => {
+  try {
+    const report = await wordpressSyncService.runFullSyncCheck()
+    res.json(report)
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to run sync check' })
+  }
+})
+
+// Check sync status for a specific post
+app.get('/api/sync/post/:postId', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const postId = parseInt(req.params.postId)
+    if (isNaN(postId)) {
+      res.status(400).json({ error: 'Invalid post ID' })
+      return
+    }
+
+    const status = await wordpressSyncService.checkPostSync(postId)
+    res.json(status)
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to check post sync' })
+  }
+})
+
+// Pull remote status for a post
+app.post('/api/sync/pull/:postId', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const postId = parseInt(req.params.postId)
+    if (isNaN(postId)) {
+      res.status(400).json({ error: 'Invalid post ID' })
+      return
+    }
+
+    const success = await wordpressSyncService.pullRemoteStatus(postId)
+    if (success) {
+      res.json({ message: 'Local status updated from WordPress' })
+    } else {
+      res.status(404).json({ error: 'Post not found or could not be updated' })
+    }
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to pull remote status' })
+  }
+})
+
 // ============ HEALTH CHECK ============
 
 app.get('/api/health', (_req: Request, res: Response) => {
+  const retryStats = getRetryQueueStats()
+  const schedulerStats = scheduler.getSchedulerStats()
+  const articleStats = getArticleStats()
+  const backupStats = imageBackup.getBackupStats()
+
   res.json({
     status: 'ok',
     timestamp: new Date().toISOString(),
-    version: '1.0.0'
+    version: '2.0.0',
+    features: {
+      authentication: process.env.API_AUTH_DISABLED !== 'true',
+      scheduling: true,
+      retryQueue: true,
+      duplicateDetection: true,
+      structuredLogging: true,
+      imageBackup: true,
+      wordpressSync: true
+    },
+    stats: {
+      retries: retryStats,
+      scheduler: schedulerStats,
+      articles: articleStats,
+      backups: {
+        total: backupStats.totalBackups,
+        sizeMB: Math.round(backupStats.totalSize / 1024 / 1024 * 100) / 100
+      }
+    }
   })
 })
 
@@ -1301,20 +1814,48 @@ function generatePinCSV(pins: Array<{
 
 export function startApiServer(): void {
   app.listen(PORT, () => {
+    logger.info(`API Server running at http://localhost:${PORT}`)
     console.log(`\n🚀 API Server running at http://localhost:${PORT}`)
-    console.log(`📚 Available endpoints:`)
-    console.log(`   POST   /api/articles/generate`)
-    console.log(`   GET    /api/dashboard`)
-    console.log(`   GET    /api/dashboard/stats`)
-    console.log(`   GET    /api/pins`)
-    console.log(`   POST   /api/pins/:id/approve`)
-    console.log(`   POST   /api/pins/:id/publish`)
-    console.log(`   POST   /api/pins/export (paginated, max 200 rows)`)
-    console.log(`   GET    /api/pins/export/info`)
-    console.log(`   GET    /api/articles`)
-    console.log(`   GET    /api/settings`)
-    console.log(`   POST   /api/settings`)
-    console.log(`   GET    /api/health\n`)
+    console.log(`\n📚 Core endpoints:`)
+    console.log(`   POST   /api/articles/generate    - Generate new article`)
+    console.log(`   GET    /api/dashboard            - Dashboard data`)
+    console.log(`   GET    /api/pins                 - List pins`)
+    console.log(`   POST   /api/pins/export          - Export to CSV`)
+    console.log(`\n🔐 Authentication:`)
+    console.log(`   POST   /api/auth/keys            - Generate API key`)
+    console.log(`   GET    /api/auth/keys            - List API keys`)
+    console.log(`   DELETE /api/auth/keys/:id        - Revoke API key`)
+    console.log(`\n📅 Scheduling:`)
+    console.log(`   POST   /api/schedule             - Schedule content`)
+    console.log(`   GET    /api/schedule             - List scheduled`)
+    console.log(`   GET    /api/schedule/upcoming    - Upcoming content`)
+    console.log(`\n🔄 Retry queue:`)
+    console.log(`   GET    /api/retries              - Pending retries`)
+    console.log(`   GET    /api/retries/stats        - Queue statistics`)
+    console.log(`   POST   /api/retries/process      - Process retries`)
+    console.log(`\n📝 Articles:`)
+    console.log(`   GET    /api/articles/history     - Article history`)
+    console.log(`   POST   /api/articles/check-duplicate - Check duplicates`)
+    console.log(`\n💚 /api/health - Health check\n`)
+
+    // Start the scheduler
+    scheduler.startScheduler(async (scheduled) => {
+      // Create a job for the scheduled content
+      const job = createJob(scheduled.topic)
+      generateArticleBackground(job.id, scheduled.topic, true, true, true)
+      return job.id
+    }, 60000)  // Check every minute
+
+    logger.info('Content scheduler started')
+    console.log(`⏰ Content scheduler started (checking every 60s)`)
+
+    if (process.env.API_AUTH_DISABLED === 'true') {
+      console.log(`\n⚠️  Authentication is DISABLED (API_AUTH_DISABLED=true)`)
+    } else {
+      console.log(`\n🔒 Authentication is ENABLED`)
+      console.log(`   Generate your first API key: POST /api/auth/keys {"name": "admin"}`)
+    }
+    console.log()
   })
 }
 

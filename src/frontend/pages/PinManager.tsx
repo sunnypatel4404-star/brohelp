@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { getPins, approvePin, exportPinsAsCSV, getExportInfo, getErrorMessage, generatePinsFromUrl, exportSelectedPinsAsCSV, type ExportInfo, PINTEREST_MAX_ROWS } from '../services/api'
+import { getPins, approvePin, exportPinsAsCSV, getExportInfo, getErrorMessage, generatePinsFromUrl, exportSelectedPinsAsCSV, type ExportInfo } from '../services/api'
 
 interface PinVariation {
   angle: string
