@@ -4,7 +4,7 @@ import dotenv from 'dotenv'
 import * as fs from 'fs'
 import * as path from 'path'
 import { ChatGPTService } from '../services/chatgptService'
-import { ImageGenerationService } from '../services/imageGenerationService'
+import { ImageServiceV2 } from '../services/imageServiceV2'
 import { WordPressXmlRpcService } from '../services/wordpressXmlrpcService'
 import { PinGenerationService } from '../services/pinGenerationService'
 import { PinStorageService } from '../services/pinStorageService'
@@ -275,7 +275,7 @@ const botConfig: BotConfig = {
 
 // Initialize services
 const chatgpt = new ChatGPTService(process.env.OPENAI_API_KEY || '', botConfig)
-const imageGenerator = new ImageGenerationService(process.env.OPENAI_API_KEY || '')
+const imageGenerator = new ImageServiceV2('./generated_images')
 const wordpress = new WordPressXmlRpcService(
   process.env.WORDPRESS_URL || '',
   process.env.WORDPRESS_USERNAME || '',
@@ -467,16 +467,11 @@ async function generateArticleBackground(
       console.log(`[Job ${jobId}] Generating images (Pinterest + WordPress from same source)...`)
 
       try {
-        // Generate both images from single Pinterest generation (ensures consistency + overlays)
-        const images = await imageGenerator.generateBothImages({
-          topic,
-          articleTitle: articleContent.title,
-          articleContent: articleContent.content
-        })
+        // Generate both images using Gemini
+        const images = await imageGenerator.generateBothImages(topic)
 
         wpImagePath = images.wordpress.localPath
         pinImagePath = images.pinterest.localPath
-        pinImageUrl = images.pinterest.url
 
         result.imagePath = wpImagePath
         result.pinImagePath = pinImagePath
@@ -558,10 +553,8 @@ async function generateArticleBackground(
             pinImageUrl = pinMediaResult.url
             console.log(`[Job ${jobId}] Pinterest image uploaded to WordPress: ${pinImageUrl}`)
 
-            // Save WordPress URL to database
-            if (pinImagePath) {
-              imageGenerator.updateWordPressUrl(pinImagePath, pinMediaResult.url)
-            }
+            // Pinterest image uploaded successfully
+            console.log(`[Job ${jobId}] Pinterest image uploaded: ${pinMediaResult.url}`)
           } catch (err) {
             console.error(`[Job ${jobId}] Failed to upload Pinterest image:`, err instanceof Error ? err.message : err)
           }
@@ -851,28 +844,15 @@ app.post('/api/pins/generate-from-url', async (req: Request, res: Response): Pro
     // Generate unique images for each pin variation
     console.log(`🎨 Generating ${selectedVariations.length} unique pin images...`)
 
-    const imageService = new ImageGenerationService(
-      process.env.OPENAI_API_KEY || '',
-      './generated_images',
-      'gemini'
-    )
-
-    // Generate images with slightly different prompts for variety
-    const imagePrompts = [
-      title, // Original topic
-      `${title} - parent helping child`, // Parent-child focus
-      `${title} - tips and activities` // Activity focus
-    ]
+    const pinImageService = new ImageServiceV2('./generated_images')
 
     for (let i = 0; i < selectedVariations.length; i++) {
       try {
-        const promptVariation = imagePrompts[i] || title
-        console.log(`  🖼️  Generating image ${i + 1}/${selectedVariations.length}: "${promptVariation}"`)
+        console.log(`  🖼️  Generating image ${i + 1}/${selectedVariations.length}`)
 
-        const image = await imageService.generateArticleImage({
-          topic: promptVariation,
-          articleTitle: selectedVariations[i].title,
-          imageType: 'pinterest'
+        const image = await pinImageService.generateImage({
+          topic: title,
+          type: 'pinterest'
         })
 
         selectedVariations[i].imageUrl = image.localPath

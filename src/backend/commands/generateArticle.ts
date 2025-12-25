@@ -2,7 +2,7 @@ import dotenv from 'dotenv';
 import * as path from 'path';
 import { ChatGPTService } from '../services/chatgptService';
 import { WordPressXmlRpcService } from '../services/wordpressXmlrpcService';
-import { ImageGenerationService } from '../services/imageGenerationService';
+import { ImageServiceV2 } from '../services/imageServiceV2';
 import { PinGenerationService } from '../services/pinGenerationService';
 import { PinStorageService } from '../services/pinStorageService';
 import { InternalLinkingService } from '../services/internalLinkingService';
@@ -84,7 +84,7 @@ async function main() {
     // Initialize services with bot configuration
     const chatgpt = new ChatGPTService(openaiApiKey, parentVillageBotConfig);
     const wordpress = new WordPressXmlRpcService(wordpressUrl, wordpressUsername, wordpressPassword);
-    const imageService = new ImageGenerationService(openaiApiKey);
+    const imageService = new ImageServiceV2('./generated_images');
     const internalLinking = new InternalLinkingService(wordpress);
 
     console.log(`📝 Generating article about: "${topic}"\n`);
@@ -102,13 +102,9 @@ async function main() {
 
     console.log(`\n📄 Article generated successfully\n`);
 
-    // Generate both images from single Pinterest generation (ensures consistency)
-    console.log('🖼️  Generating images (Pinterest + WordPress from same source)...\n');
-    const images = await imageService.generateBothImages({
-      topic,
-      articleTitle: article.title,
-      articleContent: article.content
-    });
+    // Generate both images using Gemini
+    console.log('🖼️  Generating images with Gemini...\n');
+    const images = await imageService.generateBothImages(topic);
 
     const wpImage = images.wordpress;
     const pinImage = images.pinterest;
@@ -171,9 +167,6 @@ async function main() {
       const mediaResult = await wordpress.uploadMedia(wpImage.localPath, fileName);
       await wordpress.setFeaturedImage(post.id, mediaResult.attachmentId);
 
-      // Save WordPress URL to database
-      imageService.updateWordPressUrl(wpImage.localPath, mediaResult.url);
-
       console.log('✅ Featured image uploaded successfully\n');
     } catch (error) {
       console.warn('⚠️  Warning: Could not set featured image, but article was created successfully');
@@ -182,20 +175,17 @@ async function main() {
 
     // Upload Pinterest pin image to WordPress media library (for permanent URL)
     console.log('📌 Uploading Pinterest pin image to WordPress...\n');
-    let pinterestImageUrl = pinImage.url; // Default to DALL-E URL
+    let pinterestImageUrl = '';
     try {
       const pinFileName = path.basename(pinImage.localPath);
       const pinMediaResult = await wordpress.uploadMedia(pinImage.localPath, pinFileName);
       pinterestImageUrl = pinMediaResult.url;
 
-      // Save WordPress URL to database
-      imageService.updateWordPressUrl(pinImage.localPath, pinMediaResult.url);
-
       console.log(`✅ Pinterest image uploaded to WordPress media library\n`);
       console.log(`   URL: ${pinterestImageUrl}\n`);
     } catch (error) {
       console.warn('⚠️  Warning: Could not upload Pinterest image to WordPress');
-      console.warn(`   Using temporary DALL-E URL instead\n`);
+      console.warn(`   Error: ${error instanceof Error ? error.message : error}\n`);
     }
 
     console.log(`Review URL: ${wordpressUrl}/wp-admin/post.php?post=${post.id}&action=edit`);
